@@ -1,5 +1,17 @@
 # CardSmart V2 for Netlify
 
+## V8 payment-copilot UX
+
+- Home is now a single, high-focus “before you pay” command surface instead of a dense rewards form.
+- Category and payment route stay available, but move into optional fine-tuning so the default journey needs only merchant and amount.
+- Results lead with one decisive card choice, expected reward and incremental value; calculation details and assumptions use progressive disclosure.
+- Navigation now follows user jobs: Pay smart, My cards, Get a card and My savings.
+- My cards includes wallet-readiness and cap-usage summaries instead of functioning only as a card gallery.
+- My savings turns saved activity into an outcome scoreboard with incremental value and expected rewards.
+- Mobile uses a tighter command flow, a persistent result action area and job-based bottom navigation.
+- V8 changes presentation and information hierarchy only. The V7 ranking engine, Supabase schema and persistence behavior remain intact.
+- No new Supabase migration is required for V8.
+
 ## V7 recommendation trust engine
 
 - The complete existing card catalogue remains available; no cards were removed.
