@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test --experimental-strip-types tests/recommendationEngine.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",

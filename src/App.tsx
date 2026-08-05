@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabase";
+import {
+  confidenceLabel,
+  evaluateCard,
+  rankCards,
+  type PaymentChannel,
+  type PurchaseCategory,
+  type RewardModel,
+} from "./recommendationEngine";
 
 type CardData = {
   id: string;
@@ -19,6 +27,7 @@ type CardData = {
   capUsed: number;
   trackedValue: number;
   note: string;
+  rewardModel: RewardModel;
 };
 
 type CatalogueCardInput = {
@@ -32,6 +41,7 @@ type CatalogueCardInput = {
   merchantRates?: Record<string, number>;
   cap?: string;
   note?: string;
+  rewardModel?: Partial<RewardModel>;
 };
 
 type ActivityItem = {
@@ -125,6 +135,7 @@ function catalogueCard({
   merchantRates,
   cap = "Detailed caps and milestones being verified",
   note = "Illustrative prototype rate. Full issuer rules will be verified before production.",
+  rewardModel,
 }: CatalogueCardInput): CardData {
   const theme = BANK_THEMES[bank] ?? { colors: ["#4b5568", "#1f2632"] as [string, string], accent: "#f3f5f8" };
   return {
@@ -142,6 +153,17 @@ function catalogueCard({
     capUsed: 0,
     trackedValue: 0,
     note,
+    rewardModel: {
+      confidence: rewardModel?.confidence ?? "indicative",
+      reviewedOn: rewardModel?.reviewedOn,
+      rewardLabel: rewardModel?.rewardLabel ?? "Estimated reward value",
+      exclusions: rewardModel?.exclusions,
+      merchantRules: rewardModel?.merchantRules,
+      categoryRates: rewardModel?.categoryRates,
+      channelRates: rewardModel?.channelRates,
+      defaultCapAmount: rewardModel?.defaultCapAmount,
+      assumptions: rewardModel?.assumptions ?? ["Catalogue rate is indicative and has not yet been fully modelled against issuer terms."],
+    },
   };
 }
 
@@ -160,7 +182,19 @@ const CATALOG: CardData[] = [
     cap: "₹1,500 cashback / month on Swiggy",
     capUsed: 0,
     trackedValue: 0,
-    note: "10% cashback is subject to the monthly Swiggy cap.",
+    note: "10% on eligible Swiggy App spends, subject to a ₹1,500 billing-cycle cap.",
+    rewardModel: {
+      confidence: "verified",
+      reviewedOn: "August 2026",
+      rewardLabel: "Cashback",
+      exclusions: ["fuel", "rent", "wallet", "government"],
+      merchantRules: [
+        { matches: ["swiggy"], rate: 10, channels: ["online", "app"], capAmount: 1500, label: "10% eligible Swiggy App cashback" },
+        { matches: ["*"], rate: 5, channels: ["online", "app"], categories: ["shopping"], capAmount: 1500, label: "5% eligible online-category cashback" },
+      ],
+      categoryRates: { dining: 1, grocery: 1, travel: 1, shopping: 1, utilities: 1, education: 1, insurance: 1, other: 1 },
+      assumptions: ["Non-Swiggy 5% eligibility depends on the merchant category code; unrecognised online spends use the 1% base rate."],
+    },
   },
   {
     id: "sbi-cashback",
@@ -172,10 +206,19 @@ const CATALOG: CardData[] = [
     bestFor: ["Online shopping", "Everyday"],
     baseRate: 1,
     rates: { online: 5, dining: 5, travel: 5, grocery: 5 },
-    cap: "₹5,000 online cashback / month",
+    cap: "₹2,000 online + ₹2,000 offline cashback / statement cycle",
     capUsed: 0,
     trackedValue: 0,
-    note: "5% applies to eligible online spends; exclusions may apply.",
+    note: "From 1 Apr 2026: 5% eligible online and 1% eligible offline spends; ₹4,000 aggregate cycle cap.",
+    rewardModel: {
+      confidence: "verified",
+      reviewedOn: "August 2026",
+      rewardLabel: "Cashback",
+      exclusions: ["utilities", "insurance", "fuel", "rent", "wallet", "education", "government"],
+      channelRates: { online: 5, app: 5, offline: 1, upi: 1 },
+      defaultCapAmount: 2000,
+      assumptions: ["The applicable online/offline sub-cap is reduced by the cap usage entered for this card.", "Jewellery, railways, tolls and digital gaming are also excluded; enter the category explicitly when relevant."],
+    },
   },
   {
     id: "axis-atlas",
@@ -190,7 +233,14 @@ const CATALOG: CardData[] = [
     cap: "Milestone-based EDGE Miles",
     capUsed: 0,
     trackedValue: 0,
-    note: "Value shown uses an indicative ₹1 per EDGE Mile.",
+    note: "5 EDGE Miles/₹100 on eligible travel and 2/₹100 on other eligible spends; value assumes ₹1 per EDGE Mile.",
+    rewardModel: {
+      confidence: "reviewed",
+      reviewedOn: "August 2026",
+      rewardLabel: "EDGE Miles value",
+      categoryRates: { travel: 5 },
+      assumptions: ["Uses ₹1 as the comparison value of one EDGE Mile.", "Travel acceleration is limited to eligible airlines, hotels and Travel EDGE; exact MCC recognition can vary."],
+    },
   },
   {
     id: "hdfc-millennia",
@@ -206,7 +256,16 @@ const CATALOG: CardData[] = [
     cap: "₹1,000 cashback / month on 5% spends",
     capUsed: 0,
     trackedValue: 0,
-    note: "Higher cashback is limited to eligible partner merchants.",
+    note: "5% on ten eligible partner merchants, capped at ₹1,000 per calendar month; 1% base cashback has a separate ₹1,000 cap.",
+    rewardModel: {
+      confidence: "verified",
+      reviewedOn: "August 2026",
+      rewardLabel: "CashPoints value",
+      exclusions: ["fuel", "rent", "wallet", "government"],
+      merchantRules: [{ matches: ["amazon", "bookmyshow", "cult.fit", "flipkart", "myntra", "sony liv", "swiggy", "tata cliq", "uber", "zomato"], rate: 5, capAmount: 1000, label: "5% Millennia partner cashback" }],
+      defaultCapAmount: 1000,
+      assumptions: ["Partner cashback depends on the issuer recognising the merchant ID.", "EMI transactions do not earn cashback."],
+    },
   },
   {
     id: "amazon-icici",
@@ -222,7 +281,14 @@ const CATALOG: CardData[] = [
     cap: "No published cashback cap",
     capUsed: 0,
     trackedValue: 0,
-    note: "Amazon rate assumes an eligible Prime membership.",
+    note: "5% on Amazon.in assumes Prime membership; non-Prime earns 3%. Other eligible payments earn 1%.",
+    rewardModel: {
+      confidence: "reviewed",
+      reviewedOn: "August 2026",
+      rewardLabel: "Amazon Pay balance",
+      merchantRules: [{ matches: ["amazon"], rate: 5, channels: ["online", "app"], categories: ["shopping", "travel"], label: "Amazon Prime purchase reward" }],
+      assumptions: ["Amazon rate assumes an active Prime membership; choose another card if the user is non-Prime and the 3% rate changes the result.", "Amazon Pay partner merchants may earn 2% when paid through Amazon Pay."],
+    },
   },
   {
     id: "hsbc-liveplus",
@@ -237,7 +303,15 @@ const CATALOG: CardData[] = [
     cap: "₹1,000 accelerated cashback / month",
     capUsed: 0,
     trackedValue: 0,
-    note: "Accelerated rate is subject to the combined monthly cap.",
+    note: "10% on eligible dining, food delivery and grocery spends, capped at ₹1,000 monthly; most other eligible spends earn 1.5%.",
+    rewardModel: {
+      confidence: "verified",
+      reviewedOn: "August 2026",
+      rewardLabel: "Cashback",
+      exclusions: ["utilities"],
+      merchantRules: [{ matches: ["*"], rate: 10, categories: ["dining", "grocery"], capAmount: 1000, label: "10% dining / food delivery / grocery cashback" }],
+      assumptions: ["The ₹1,000 cap is shared across dining, food delivery and groceries."],
+    },
   },
   {
     id: "hdfc-infinia",
@@ -248,11 +322,17 @@ const CATALOG: CardData[] = [
     accent: "#e6edf1",
     bestFor: ["Travel", "Premium spends"],
     baseRate: 3.3,
-    rates: { travel: 5, online: 3.3, dining: 3.3, grocery: 3.3 },
-    cap: "Reward points subject to daily limits",
+    rates: { travel: 3.3, online: 3.3, dining: 3.3, grocery: 3.3 },
+    cap: "Base rewards plus channel-specific SmartBuy limits",
     capUsed: 0,
     trackedValue: 0,
-    note: "Value depends on redemption method and booking channel.",
+    note: "5 Reward Points per ₹150 eligible retail spend. Value shown assumes ₹1 per point through eligible travel redemption.",
+    rewardModel: {
+      confidence: "reviewed",
+      reviewedOn: "August 2026",
+      rewardLabel: "Reward Point value",
+      assumptions: ["Uses ₹1 per Reward Point; statement credit or other redemptions can be worth less.", "SmartBuy acceleration is not applied unless a specific verified booking route is modelled."],
+    },
   },
   {
     id: "axis-ace",
@@ -268,7 +348,18 @@ const CATALOG: CardData[] = [
     cap: "₹500 accelerated cashback / month",
     capUsed: 0,
     trackedValue: 0,
-    note: "Utility rate depends on the eligible payment channel.",
+    note: "5% on eligible utilities via Google Pay, 4% on Swiggy/Zomato/Ola, and 1.5% on other eligible spends.",
+    rewardModel: {
+      confidence: "verified",
+      reviewedOn: "August 2026",
+      rewardLabel: "Cashback",
+      exclusions: ["fuel", "rent", "wallet", "education", "insurance", "government"],
+      merchantRules: [
+        { matches: ["gpay", "google pay"], rate: 5, channels: ["app"], categories: ["utilities"], capAmount: 500, label: "5% Google Pay utility cashback" },
+        { matches: ["swiggy", "zomato", "ola"], rate: 4, channels: ["online", "app"], capAmount: 500, label: "4% partner cashback" },
+      ],
+      assumptions: ["The ₹500 cap is shared across the 5% and 4% cashback buckets.", "Utilities paid outside Google Pay earn no cashback."],
+    },
   },
   {
     id: "amex-mrcc",
@@ -278,16 +369,37 @@ const CATALOG: CardData[] = [
     colors: ["#2a7fa2", "#143d53"],
     accent: "#c9f2ff",
     bestFor: ["Milestones", "Rewards"],
-    baseRate: 2,
-    rates: { online: 2, dining: 2, travel: 2, grocery: 2 },
+    baseRate: 1,
+    rates: { online: 1, dining: 1, travel: 1, grocery: 1 },
     cap: "Monthly transaction milestones",
     capUsed: 0,
     trackedValue: 0,
-    note: "Effective value varies based on milestone achievement.",
+    note: "Base estimate assumes 1 MR point per ₹50 and ₹0.50 per point. Monthly milestone bonuses are shown as upside, not guaranteed value.",
+    rewardModel: {
+      confidence: "reviewed",
+      reviewedOn: "August 2026",
+      rewardLabel: "Membership Rewards value",
+      exclusions: ["fuel", "insurance", "utilities"],
+      assumptions: ["Uses ₹0.50 per Membership Rewards point.", "The 1,000-point bonus for four ₹1,500+ transactions is not included because monthly qualifying transaction count is not tracked."],
+    },
   },
   catalogueCard({ id: "hdfc-regalia-gold", bank: "HDFC Bank", name: "Regalia Gold", bestFor: ["Travel", "Lounge"], baseRate: 1.3, rates: { travel: 2.6 } }),
   catalogueCard({ id: "hdfc-dcb-metal", bank: "HDFC Bank", name: "Diners Club Black Metal", network: "Diners Club", bestFor: ["Travel", "Premium rewards"], baseRate: 3.3, rates: { travel: 5 } }),
-  catalogueCard({ id: "hdfc-tata-neu-infinity", bank: "HDFC Bank", name: "Tata Neu Infinity", network: "RuPay", bestFor: ["Tata brands", "UPI"], baseRate: 1.5, merchantRates: { tata: 5 } }),
+  catalogueCard({
+    id: "hdfc-tata-neu-infinity", bank: "HDFC Bank", name: "Tata Neu Infinity", network: "RuPay", bestFor: ["Tata brands", "UPI"], baseRate: 1.5,
+    merchantRates: { tata: 5 }, cap: "500 NeuCoins / month on eligible UPI payments",
+    note: "5% NeuCoins on eligible Tata brands; up to 1.5% on eligible UPI via Tata Neu UPI ID.",
+    rewardModel: {
+      confidence: "verified", reviewedOn: "August 2026", rewardLabel: "NeuCoins value",
+      exclusions: ["fuel", "wallet", "rent", "government"],
+      merchantRules: [
+        { matches: ["tata neu upi"], rate: 1.5, channels: ["upi"], capAmount: 500, label: "Tata Neu UPI reward" },
+        { matches: ["tata"], rate: 5, channels: ["online", "app"], label: "Eligible Tata brand reward" },
+        { matches: ["*"], rate: 0.5, channels: ["upi"], capAmount: 500, label: "Eligible RuPay UPI base reward" },
+      ],
+      assumptions: ["The extra 1% on UPI requires a Tata Neu UPI ID; other eligible UPI earns 0.5% from the card."],
+    },
+  }),
   catalogueCard({ id: "hdfc-tata-neu-plus", bank: "HDFC Bank", name: "Tata Neu Plus", network: "RuPay", bestFor: ["Tata brands", "UPI"], baseRate: 1, merchantRates: { tata: 2 } }),
   catalogueCard({ id: "hdfc-marriott-bonvoy", bank: "HDFC Bank", name: "Marriott Bonvoy", network: "Mastercard", bestFor: ["Marriott", "Hotels"], baseRate: 1.5, rates: { travel: 3 } }),
   catalogueCard({ id: "hdfc-indianoil", bank: "HDFC Bank", name: "IndianOil", network: "RuPay", bestFor: ["Fuel", "Groceries"], baseRate: 0.5 }),
@@ -302,7 +414,19 @@ const CATALOG: CardData[] = [
   catalogueCard({ id: "sbi-miles", bank: "SBI Card", name: "MILES", bestFor: ["Flights", "Travel rewards"], baseRate: 0.5, rates: { travel: 1 } }),
   catalogueCard({ id: "axis-magnus", bank: "Axis Bank", name: "Magnus", bestFor: ["Premium travel", "Milestones"], baseRate: 1.2, rates: { travel: 2.4 } }),
   catalogueCard({ id: "axis-burgundy-private", bank: "Axis Bank", name: "Burgundy Private", bestFor: ["Premium rewards", "Travel"], baseRate: 2, rates: { travel: 4 } }),
-  catalogueCard({ id: "axis-airtel", bank: "Axis Bank", name: "Airtel", network: "Mastercard", bestFor: ["Airtel bills", "Utilities"], baseRate: 1, merchantRates: { airtel: 25, swiggy: 10, zomato: 10 } }),
+  catalogueCard({
+    id: "axis-airtel", bank: "Axis Bank", name: "Airtel", network: "Mastercard", bestFor: ["Airtel bills", "Utilities"], baseRate: 1,
+    merchantRates: { airtel: 25 }, cap: "Accelerated cashback cap depends on base cashback earned",
+    note: "25% Airtel and 10% utility cashback requires Airtel Thanks App; current caps are linked to 1% base cashback earned in the cycle.",
+    rewardModel: {
+      confidence: "reviewed", reviewedOn: "August 2026", rewardLabel: "Cashback",
+      merchantRules: [
+        { matches: ["airtel"], rate: 25, channels: ["app"], label: "25% Airtel Thanks App cashback" },
+        { matches: ["electricity", "gas bill", "utility"], rate: 10, channels: ["app"], categories: ["utilities"], label: "10% Airtel Thanks utility cashback" },
+      ],
+      assumptions: ["The dynamic cap cannot be calculated without the statement cycle's eligible 1% base cashback, so the displayed value is pre-cap."],
+    },
+  }),
   catalogueCard({ id: "axis-flipkart", bank: "Axis Bank", name: "Flipkart", bestFor: ["Flipkart", "Online shopping"], baseRate: 1, merchantRates: { flipkart: 5 } }),
   catalogueCard({ id: "axis-neo", bank: "Axis Bank", name: "Neo", network: "RuPay", bestFor: ["Partner offers", "Dining"], baseRate: 0.2 }),
   catalogueCard({ id: "axis-my-zone", bank: "Axis Bank", name: "My Zone", network: "RuPay", bestFor: ["Movies", "Food delivery"], baseRate: 0.2 }),
@@ -327,7 +451,16 @@ const CATALOG: CardData[] = [
   catalogueCard({ id: "hsbc-travelone", bank: "HSBC", name: "TravelOne", network: "Mastercard", bestFor: ["Flights", "Miles transfer"], baseRate: 1, rates: { travel: 2 } }),
   catalogueCard({ id: "hsbc-premier", bank: "HSBC", name: "Premier", network: "Mastercard", bestFor: ["Premium travel", "Miles transfer"], baseRate: 1.5, rates: { travel: 2 } }),
   catalogueCard({ id: "hsbc-visa-platinum", bank: "HSBC", name: "Visa Platinum", bestFor: ["Everyday", "Lifetime free"], baseRate: 0.5 }),
-  catalogueCard({ id: "amex-platinum-travel", bank: "American Express", name: "Platinum Travel", network: "AMEX", bestFor: ["Milestones", "Travel"], baseRate: 1, rates: { travel: 1.5 } }),
+  catalogueCard({
+    id: "amex-platinum-travel", bank: "American Express", name: "Platinum Travel", network: "AMEX", bestFor: ["Milestones", "Travel"], baseRate: 1,
+    rates: { travel: 1 }, cap: "Annual spend milestones are not included in one-payment estimates",
+    note: "Base estimate assumes 1 MR point per ₹50 and ₹0.50 per point; milestone value needs annual spend tracking.",
+    rewardModel: {
+      confidence: "reviewed", reviewedOn: "August 2026", rewardLabel: "Membership Rewards value",
+      exclusions: ["fuel", "insurance", "utilities"],
+      assumptions: ["Uses ₹0.50 per Membership Rewards point.", "Annual milestone bonuses are not added to a single-payment result."],
+    },
+  }),
   catalogueCard({ id: "amex-smartearn", bank: "American Express", name: "SmartEarn", network: "AMEX", bestFor: ["Partner brands", "Online"], baseRate: 0.5, rates: { online: 2.5 } }),
   catalogueCard({ id: "amex-platinum-reserve", bank: "American Express", name: "Platinum Reserve", network: "AMEX", bestFor: ["Lifestyle", "Lounge"], baseRate: 1 }),
   catalogueCard({ id: "amex-platinum", bank: "American Express", name: "Platinum Card", network: "AMEX", bestFor: ["Luxury travel", "Concierge"], baseRate: 1.5, rates: { travel: 3 } }),
@@ -513,14 +646,6 @@ function CardVisual({ card, compact = false }: { card: CardData; compact?: boole
   );
 }
 
-function classifyPurchase(merchant: string) {
-  const text = merchant.toLowerCase();
-  if (/swiggy|zomato|restaurant|dinner|lunch|cafe|food/.test(text)) return "dining";
-  if (/flight|hotel|makemytrip|cleartrip|ixigo|travel/.test(text)) return "travel";
-  if (/grocery|blinkit|zepto|bigbasket|dmart/.test(text)) return "grocery";
-  return "online";
-}
-
 function shortBankName(bank: string) {
   return bank.replace(" Bank", "").replace(" Card", "");
 }
@@ -543,18 +668,12 @@ async function withDataLoadTimeout<T>(request: PromiseLike<T>): Promise<T> {
   }
 }
 
-function recommendationFor(card: CardData, merchant: string, amount: number) {
-  const normalized = merchant.toLowerCase();
-  const merchantMatch = Object.entries(card.merchantRates ?? {}).find(([key]) => normalized.includes(key));
-  const category = classifyPurchase(merchant);
-  const rate = merchantMatch?.[1] ?? card.rates[category] ?? card.baseRate;
-  return { card, rate, value: Math.round((amount * rate) / 100), category };
-}
-
 export default function Home() {
   const [view, setView] = useState<"home" | "result" | "wallet" | "explore" | "activity" | "profile">("home");
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
+  const [purchaseCategory, setPurchaseCategory] = useState<PurchaseCategory>("auto");
+  const [paymentChannel, setPaymentChannel] = useState<PaymentChannel>("auto");
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
   const [walletDraftIds, setWalletDraftIds] = useState(DEFAULT_WALLET);
   const [walletRows, setWalletRows] = useState<Record<string, WalletRow>>({});
@@ -630,9 +749,14 @@ export default function Home() {
         let largestGap = { category: "everyday spend", value: 0 };
         spendEntries.forEach(([category, rawAmount]) => {
           const categorySpend = Number(rawAmount) || 0;
-          const currentRate = Math.max(...walletCards.map((card) => card.rates[category] ?? card.baseRate));
-          const candidateRate = candidate.rates[category] ?? candidate.baseRate;
-          const value = categorySpend * Math.max(0, candidateRate - currentRate) / 100;
+          const categoryMap: Record<keyof SpendProfile, PurchaseCategory> = {
+            online: "shopping", dining: "dining", travel: "travel", grocery: "grocery", bills: "utilities", fuel: "fuel",
+          };
+          const engineCategory = categoryMap[category];
+          const input = { merchant: category, amount: categorySpend, category: engineCategory, channel: "online" as PaymentChannel };
+          const currentValue = Math.max(...walletCards.map((card) => evaluateCard(card, input).value));
+          const candidateValue = evaluateCard(candidate, input).value;
+          const value = Math.max(0, candidateValue - currentValue);
           monthlyGain += value;
           if (value > largestGap.value) largestGap = { category, value };
         });
@@ -642,8 +766,13 @@ export default function Home() {
   }, [monthlyCardSpend, spendProfile, walletCards, walletIds]);
   const numericAmount = Number(amount.replace(/,/g, "")) || 0;
   const ranked = useMemo(
-    () => walletCards.map((card) => recommendationFor(card, merchant, numericAmount)).sort((a, b) => b.value - a.value),
-    [merchant, numericAmount, walletCards]
+    () => rankCards(walletCards, {
+      merchant,
+      amount: numericAmount,
+      category: purchaseCategory,
+      channel: paymentChannel,
+    }),
+    [merchant, numericAmount, paymentChannel, purchaseCategory, walletCards]
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
@@ -681,17 +810,25 @@ export default function Home() {
         best_card: `${winner.card.bank} ${winner.card.name}`,
         best_card_id: winner.card.id,
         benefit: `₹${winner.value.toLocaleString("en-IN")} expected reward`,
-        estimated_saving: `₹${numericAmount.toLocaleString("en-IN")} × ${winner.rate}% = ₹${winner.value.toLocaleString("en-IN")}`,
+        estimated_saving: winner.capAdjustment
+          ? `₹${numericAmount.toLocaleString("en-IN")} × ${winner.rate}% = ₹${winner.grossValue.toLocaleString("en-IN")}, capped to ₹${winner.value.toLocaleString("en-IN")}`
+          : `₹${numericAmount.toLocaleString("en-IN")} × ${winner.rate}% = ₹${winner.value.toLocaleString("en-IN")}`,
         estimated_reward: winner.value,
         incremental_reward: incrementalReward,
-        reason: `${winner.card.bank} ${winner.card.name} gives the highest estimated return for this payment among the cards in your wallet.`,
+        reason: `${winner.card.bank} ${winner.card.name} gives the highest estimated eligible return for this payment among the cards in your wallet after applying the selected category, payment route, exclusions and known cap usage.`,
         full_response: {
           merchant: merchant.trim(),
           amount: numericAmount,
           category: winner.category,
+          payment_channel: winner.channel,
           recommended_card: winner.card.id,
           estimated_rate: winner.rate,
+          gross_reward: winner.grossValue,
           estimated_reward: winner.value,
+          cap_adjustment: winner.capAdjustment,
+          rule_confidence: winner.confidence,
+          rule_label: winner.ruleLabel,
+          assumptions: winner.assumptions,
           incremental_reward: incrementalReward,
         },
         status,
@@ -1294,6 +1431,37 @@ export default function Home() {
                     <input id="amount" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0" />
                   </div>
                 </div>
+                <div className="payment-context">
+                  <label>
+                    <span>Spend category</span>
+                    <select value={purchaseCategory} onChange={(e) => setPurchaseCategory(e.target.value as PurchaseCategory)}>
+                      <option value="auto">Auto-detect</option>
+                      <option value="dining">Dining / food delivery</option>
+                      <option value="grocery">Groceries</option>
+                      <option value="shopping">Shopping</option>
+                      <option value="travel">Travel</option>
+                      <option value="utilities">Utilities / recharge</option>
+                      <option value="fuel">Fuel</option>
+                      <option value="rent">Rent</option>
+                      <option value="education">Education</option>
+                      <option value="insurance">Insurance</option>
+                      <option value="government">Government / tax</option>
+                      <option value="wallet">Wallet load</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>How will you pay?</span>
+                    <select value={paymentChannel} onChange={(e) => setPaymentChannel(e.target.value as PaymentChannel)}>
+                      <option value="auto">Auto-detect</option>
+                      <option value="online">Online card payment</option>
+                      <option value="offline">In-store card payment</option>
+                      <option value="upi">UPI with RuPay card</option>
+                      <option value="app">Required app / partner checkout</option>
+                    </select>
+                  </label>
+                  <p><Icon name="info" size={14}/> Set these when cashback depends on MCC or payment route. Auto-detect will show its assumptions.</p>
+                </div>
                 {formError && <p className="form-error">{formError}</p>}
                 <button className="primary-button find-button" type="submit">
                   Find my best card <Icon name="arrow" />
@@ -1353,20 +1521,21 @@ export default function Home() {
           <div className="result-page page-enter">
             <button className="back-button" onClick={() => setView("home")}><Icon name="back" size={18} /> New payment</button>
             <div className="result-heading">
-              <span className="eyebrow">Best card for this payment</span>
-              <h1>Use your {shortBankName(winner.card.bank)} {winner.card.name} card</h1>
-              <p>For {merchant} · ₹{numericAmount.toLocaleString("en-IN")}</p>
+              <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No eligible reward found"}</span>
+              <h1>{winner.eligible ? <>Use your {shortBankName(winner.card.bank)} {winner.card.name} card</> : "Your cards do not earn rewards here"}</h1>
+              <p>For {merchant} · ₹{numericAmount.toLocaleString("en-IN")} · {winner.category} · {winner.channel}</p>
             </div>
 
             <section className="winner-panel">
               <div className="winner-card-wrap">
-                <div className="best-badge"><Icon name="check" size={14} /> Best return</div>
+                <div className="best-badge"><Icon name={winner.eligible ? "check" : "info"} size={14} /> {winner.eligible ? "Best eligible return" : "Excluded"}</div>
                 <CardVisual card={winner.card} />
               </div>
               <div className="reward-summary">
-                <span className="summary-label">Estimated reward</span>
+                <span className={`rule-confidence rule-confidence--${winner.confidence}`}>{confidenceLabel(winner.confidence)}</span>
+                <span className="summary-label">{winner.card.rewardModel.rewardLabel ?? "Estimated reward"}</span>
                 <div className="reward-value">₹{winner.value.toLocaleString("en-IN")}</div>
-                <div className="reward-rate">{winner.rate}% back on this payment</div>
+                <div className="reward-rate">{winner.eligible ? `${winner.rate}% estimated return · ${winner.ruleLabel}` : winner.ruleLabel}</div>
                 {runnerUp && (
                   <div className="extra-value"><Icon name="spark" size={16} />
                     {winner.value > runnerUp.value
@@ -1377,8 +1546,14 @@ export default function Home() {
               </div>
               <div className="calculation-box">
                 <span>How we calculated it</span>
-                <div><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>×</span><strong>{winner.rate}%</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>
+                {winner.eligible ? (
+                  <>
+                    <div><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>×</span><strong>{winner.rate}%</strong><span>=</span><strong className="green-text">₹{winner.grossValue.toLocaleString("en-IN")}</strong></div>
+                    {winner.capAdjustment > 0 && <div className="cap-adjustment"><span>Known cap usage applied</span><strong>−₹{winner.capAdjustment.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>}
+                  </>
+                ) : <div className="excluded-calculation"><Icon name="info" size={18}/><strong>0% because this category is excluded</strong></div>}
                 <p>{winner.card.note}</p>
+                {winner.assumptions.length > 0 && <ul>{winner.assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}</ul>}
               </div>
             </section>
 
@@ -1392,8 +1567,8 @@ export default function Home() {
                   <div className={`comparison-row ${index === 0 ? "comparison-row--winner" : ""}`} key={item.card.id}>
                     <span className="rank">{index + 1}</span>
                     <span className="card-swatch" style={{ background: `linear-gradient(135deg, ${item.card.colors[0]}, ${item.card.colors[1]})` }} />
-                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.rate}% estimated return</span></div>
-                    <div className="comparison-value"><strong>₹{item.value.toLocaleString("en-IN")}</strong>{index === 0 && <span>Best</span>}</div>
+                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.eligible ? `${item.rate}% · ${confidenceLabel(item.confidence)}` : item.ruleLabel}{item.capAdjustment > 0 ? ` · ₹${item.capAdjustment.toLocaleString("en-IN")} capped` : ""}</span></div>
+                    <div className="comparison-value"><strong>₹{item.value.toLocaleString("en-IN")}</strong>{index === 0 && <span>{item.eligible ? "Best" : "Excluded"}</span>}</div>
                   </div>
                 ))}
               </div>
@@ -1416,7 +1591,7 @@ export default function Home() {
               <button className="secondary-button" onClick={() => setView("home")}>Check another payment</button>
             </section>
             {activityError && <p className="profile-form-error"><Icon name="info" size={15}/>{activityError}</p>}
-            <p className="estimate-note"><Icon name="info" size={15} /> Estimates use prototype reward rules and tracked activity. Final eligibility, exclusions and rewards are decided by the issuer.</p>
+            <p className="estimate-note"><Icon name="info" size={15} /> Verified rules are issuer-checked as of August 2026. Reviewed and indicative rules show assumptions explicitly. Final posting still depends on the issuer’s MCC recognition and terms.</p>
           </div>
         )}
 
@@ -1451,7 +1626,7 @@ export default function Home() {
                 <article className="wallet-card" key={card.id}>
                   <CardVisual card={card} />
                   <div className="wallet-card-content">
-                    <div className="wallet-title-row"><div><span>{card.bank}</span><h2>{card.name}</h2></div><button disabled={walletSaving} aria-label={`Remove ${card.name}`} onClick={() => void removeWalletCard(card.id)}><Icon name="close" size={17} /></button></div>
+                    <div className="wallet-title-row"><div><span>{card.bank}</span><h2>{card.name}</h2><small className={`catalog-confidence catalog-confidence--${card.rewardModel.confidence}`}>{confidenceLabel(card.rewardModel.confidence)}</small></div><button disabled={walletSaving} aria-label={`Remove ${card.name}`} onClick={() => void removeWalletCard(card.id)}><Icon name="close" size={17} /></button></div>
                     <div className="best-for"><span>Best for</span>{card.bestFor.map((item) => <strong key={item}>{item}</strong>)}</div>
                     <div className="cap-block">
                       <div className="cap-title"><span>Estimated cap used</span><strong>{capAmountFromRule(card.cap) ? `${card.capUsed}%` : card.trackedValue ? `₹${card.trackedValue.toLocaleString("en-IN")} entered` : "Not set"}</strong></div>
@@ -1487,7 +1662,7 @@ export default function Home() {
                     <button className="primary-button full-button" disabled={profileComplete && !monthlyCardSpend} onClick={() => { if (!profileComplete) { openProfile(); return; } if (requireAccount("save_explore")) setExploreCalculated(true); }}>{!profileComplete ? "Complete profile to see my upgrade" : !monthlyCardSpend ? "Add monthly spend to continue" : "Calculate my best upgrade"} <Icon name="arrow" /></button>
                   </div>
                   {exploreCalculated && upgradeResult ? (
-                    <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Calculated result</div><span className="mini-label">Potential wallet upgrade</span><h2>{upgradeResult.card.bank} {upgradeResult.card.name}</h2><div className="annual-value"><strong>+₹{upgradeResult.annualValue.toLocaleString("en-IN")}</strong><span>estimated extra value / year<br/>before annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>It creates the largest estimated improvement on your {upgradeResult.reasonCategory} spend versus the cards already in your wallet.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>Based on the wallet, monthly spend and prototype reward rules entered here.</span></div></aside>
+                    <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Calculated result</div><span className="mini-label">Potential wallet upgrade</span><h2>{upgradeResult.card.bank} {upgradeResult.card.name}</h2><span className={`rule-confidence rule-confidence--${upgradeResult.card.rewardModel.confidence}`}>{confidenceLabel(upgradeResult.card.rewardModel.confidence)}</span><div className="annual-value"><strong>+₹{upgradeResult.annualValue.toLocaleString("en-IN")}</strong><span>estimated extra value / year<br/>before annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>It creates the largest estimated improvement on your {upgradeResult.reasonCategory} spend versus the cards already in your wallet.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>Caps, exclusions and known usage are applied where structured rules exist. Indicative cards remain in the catalogue but are labelled.</span></div></aside>
                   ) : (
                     <aside className="upgrade-preview upgrade-preview--locked"><div className="locked-icon"><Icon name={profileComplete ? "spark" : "user"} size={22}/></div><span className="mini-label">{profileComplete ? "Ready when you are" : "Personalisation needed"}</span><h2>No made-up recommendation here.</h2><p>{profileComplete ? "Enter your typical monthly spend and calculate. We’ll compare every eligible new card against your actual wallet." : "Complete your profile and monthly spend first. Then CardSmart can explain exactly where a new card improves your current wallet."}</p>{!profileComplete && <button className="secondary-button" onClick={openProfile}>Complete my profile <Icon name="arrow" size={16}/></button>}</aside>
                   )}
@@ -1622,7 +1797,7 @@ export default function Home() {
                 return (
                   <button className={`catalog-card ${selected ? "selected" : ""}`} key={card.id} onClick={() => toggleDraftCard(card.id)}>
                     <span className="catalog-swatch" style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, color: card.accent }}><span>{card.bank.slice(0, 1)}</span></span>
-                    <span className="catalog-name"><small>{card.bank}</small><strong>{card.name}</strong><em>{card.network}</em></span>
+                    <span className="catalog-name"><small>{card.bank}</small><strong>{card.name}</strong><em>{card.network}</em><i className={`catalog-confidence catalog-confidence--${card.rewardModel.confidence}`}>{card.rewardModel.confidence === "verified" ? "Verified" : card.rewardModel.confidence === "reviewed" ? "Reviewed" : "Indicative"}</i></span>
                     <span className="selection-box">{selected && <Icon name="check" size={16} />}</span>
                   </button>
                 );

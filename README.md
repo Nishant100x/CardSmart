@@ -1,5 +1,16 @@
 # CardSmart V2 for Netlify
 
+## V7 recommendation trust engine
+
+- The complete existing card catalogue remains available; no cards were removed.
+- Users can explicitly select spend category and payment route, or use auto-detection with visible assumptions.
+- Structured issuer rules apply merchant overrides, channel requirements, exclusions and known cap usage before ranking wallet cards.
+- Results show gross reward, cap adjustments, applied rule and one of three confidence levels: `verified`, `reviewed`, or `indicative`.
+- Broad-catalogue legacy rates remain supported, but are clearly marked indicative until their full issuer rule is modelled.
+- Priority issuer rules were reviewed in August 2026 for HDFC Swiggy, SBI Cashback, Axis Atlas, HDFC Millennia, Amazon Pay ICICI, HSBC Live+, HDFC Infinia, Axis ACE, Tata Neu Infinity, Airtel Axis, Amex MRCC and Amex Platinum Travel.
+- `npm test` runs 40 automated recommendation cases covering classification, payment routes, exclusions, caps, legacy catalogue fallbacks and ranking.
+- No new Supabase migration is required for V7.
+
 ## Loading-state reliability
 
 - The Supabase auth listener stays stable instead of resubscribing on app-state changes.
