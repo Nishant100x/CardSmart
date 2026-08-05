@@ -39,6 +39,40 @@ type ActivityItem = {
   reward: number; incremental: number; status: "tracked" | "checked";
 };
 
+type RecommendationProfile = {
+  name: string;
+  mobile: string;
+  ageBand: string;
+  city: string;
+  employment: string;
+  incomeBand: string;
+  creditScoreBand: string;
+  primaryGoal: string;
+  feeComfort: string;
+};
+
+type SpendProfile = {
+  online: string;
+  dining: string;
+  travel: string;
+  grocery: string;
+  bills: string;
+  fuel: string;
+};
+
+type ProfileRow = {
+  name: string | null;
+  mobile_number: string | null;
+  city: string | null;
+  income_range: string | null;
+  work_status: string | null;
+  primary_card_goal: string | null;
+  annual_fee_comfort: string | null;
+  age_range: string | null;
+  credit_score_range: string | null;
+  monthly_spends: Record<string, number | string> | null;
+};
+
 const BANK_THEMES: Record<string, { colors: [string, string]; accent: string }> = {
   "HDFC Bank": { colors: ["#314b7e", "#101a32"], accent: "#eef3ff" },
   "SBI Card": { colors: ["#245aa4", "#132853"], accent: "#e5efff" },
@@ -102,8 +136,8 @@ const CATALOG: CardData[] = [
     rates: { dining: 5, online: 1, grocery: 5 },
     merchantRates: { swiggy: 10 },
     cap: "₹1,500 cashback / month on Swiggy",
-    capUsed: 42,
-    trackedValue: 630,
+    capUsed: 0,
+    trackedValue: 0,
     note: "10% cashback is subject to the monthly Swiggy cap.",
   },
   {
@@ -117,8 +151,8 @@ const CATALOG: CardData[] = [
     baseRate: 1,
     rates: { online: 5, dining: 5, travel: 5, grocery: 5 },
     cap: "₹5,000 online cashback / month",
-    capUsed: 24,
-    trackedValue: 1200,
+    capUsed: 0,
+    trackedValue: 0,
     note: "5% applies to eligible online spends; exclusions may apply.",
   },
   {
@@ -132,7 +166,7 @@ const CATALOG: CardData[] = [
     baseRate: 2,
     rates: { travel: 5, dining: 2, online: 2 },
     cap: "Milestone-based EDGE Miles",
-    capUsed: 68,
+    capUsed: 0,
     trackedValue: 0,
     note: "Value shown uses an indicative ₹1 per EDGE Mile.",
   },
@@ -148,8 +182,8 @@ const CATALOG: CardData[] = [
     rates: { online: 5, dining: 1, travel: 1, grocery: 1 },
     merchantRates: { swiggy: 5, amazon: 5, flipkart: 5 },
     cap: "₹1,000 cashback / month on 5% spends",
-    capUsed: 51,
-    trackedValue: 510,
+    capUsed: 0,
+    trackedValue: 0,
     note: "Higher cashback is limited to eligible partner merchants.",
   },
   {
@@ -179,8 +213,8 @@ const CATALOG: CardData[] = [
     baseRate: 1.5,
     rates: { dining: 10, grocery: 10, online: 1.5 },
     cap: "₹1,000 accelerated cashback / month",
-    capUsed: 35,
-    trackedValue: 350,
+    capUsed: 0,
+    trackedValue: 0,
     note: "Accelerated rate is subject to the combined monthly cap.",
   },
   {
@@ -194,7 +228,7 @@ const CATALOG: CardData[] = [
     baseRate: 3.3,
     rates: { travel: 5, online: 3.3, dining: 3.3, grocery: 3.3 },
     cap: "Reward points subject to daily limits",
-    capUsed: 16,
+    capUsed: 0,
     trackedValue: 0,
     note: "Value depends on redemption method and booking channel.",
   },
@@ -210,8 +244,8 @@ const CATALOG: CardData[] = [
     rates: { online: 1.5, dining: 1.5, grocery: 1.5 },
     merchantRates: { utilities: 5 },
     cap: "₹500 accelerated cashback / month",
-    capUsed: 71,
-    trackedValue: 355,
+    capUsed: 0,
+    trackedValue: 0,
     note: "Utility rate depends on the eligible payment channel.",
   },
   {
@@ -225,7 +259,7 @@ const CATALOG: CardData[] = [
     baseRate: 2,
     rates: { online: 2, dining: 2, travel: 2, grocery: 2 },
     cap: "Monthly transaction milestones",
-    capUsed: 50,
+    capUsed: 0,
     trackedValue: 0,
     note: "Effective value varies based on milestone achievement.",
   },
@@ -319,7 +353,68 @@ const CATALOG: CardData[] = [
   catalogueCard({ id: "onecard-metal", bank: "OneCard", name: "Metal Card", bestFor: ["Top categories", "App controls"], baseRate: 0.2, rates: { online: 1 } }),
 ];
 
-const DEFAULT_WALLET = ["hdfc-swiggy", "sbi-cashback", "axis-atlas"];
+const DEFAULT_WALLET: string[] = [];
+
+const EMPTY_PROFILE: RecommendationProfile = {
+  name: "",
+  mobile: "",
+  ageBand: "",
+  city: "",
+  employment: "",
+  incomeBand: "",
+  creditScoreBand: "",
+  primaryGoal: "",
+  feeComfort: "",
+};
+
+const EMPTY_SPEND_PROFILE: SpendProfile = {
+  online: "",
+  dining: "",
+  travel: "",
+  grocery: "",
+  bills: "",
+  fuel: "",
+};
+
+const PROFILE_COLUMNS = "name, mobile_number, city, income_range, work_status, primary_card_goal, annual_fee_comfort, age_range, credit_score_range, monthly_spends";
+
+function mobileDigits(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  return digits.slice(0, 10);
+}
+
+function normalizedIndianMobile(value: string) {
+  const digits = mobileDigits(value);
+  return /^[6-9]\d{9}$/.test(digits) ? `+91${digits}` : "";
+}
+
+function spendProfileFromDatabase(value: ProfileRow["monthly_spends"]): SpendProfile {
+  const spends = value ?? {};
+  return {
+    online: spends.online ? String(spends.online) : "",
+    dining: spends.dining ? String(spends.dining) : "",
+    travel: spends.travel ? String(spends.travel) : "",
+    grocery: spends.grocery ? String(spends.grocery) : "",
+    bills: spends.bills ? String(spends.bills) : "",
+    fuel: spends.fuel ? String(spends.fuel) : "",
+  };
+}
+
+function profileFromDatabase(row: ProfileRow | null, fallbackName: string, fallbackMobile: string): RecommendationProfile {
+  return {
+    name: row?.name ?? fallbackName,
+    mobile: mobileDigits(row?.mobile_number ?? fallbackMobile),
+    ageBand: row?.age_range ?? "",
+    city: row?.city ?? "",
+    employment: row?.work_status ?? "",
+    incomeBand: row?.income_range ?? "",
+    creditScoreBand: row?.credit_score_range ?? "",
+    primaryGoal: row?.primary_card_goal ?? "",
+    feeComfort: row?.annual_fee_comfort ?? "",
+  };
+}
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
@@ -391,7 +486,7 @@ function recommendationFor(card: CardData, merchant: string, amount: number) {
 }
 
 export default function Home() {
-  const [view, setView] = useState<"home" | "result" | "wallet" | "explore" | "activity">("home");
+  const [view, setView] = useState<"home" | "result" | "wallet" | "explore" | "activity" | "profile">("home");
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
@@ -404,24 +499,52 @@ export default function Home() {
   const [usageCard, setUsageCard] = useState<CardData | null>(null);
   const [manualUsage, setManualUsage] = useState("");
   const [exploreMode, setExploreMode] = useState<"discover" | "compare">("discover");
-  const [spendProfile, setSpendProfile] = useState({ online: "15000", dining: "8000", travel: "10000", grocery: "10000" });
+  const [exploreCalculated, setExploreCalculated] = useState(false);
+  const [spendProfile, setSpendProfile] = useState<SpendProfile>(EMPTY_SPEND_PROFILE);
+  const [profile, setProfile] = useState<RecommendationProfile>(EMPTY_PROFILE);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const signedIn = Boolean(authUser);
   const [authOpen, setAuthOpen] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authNotice, setAuthNotice] = useState("");
   const [authMode, setAuthMode] = useState<"signup" | "login" | "verify">("signup");
-  const [authForm, setAuthForm] = useState({ mobile: "", email: "", password: "" });
+  const [authForm, setAuthForm] = useState({ name: "", mobile: "", email: "", password: "" });
   const [authError, setAuthError] = useState("");
-  const [pendingAction, setPendingAction] = useState<"save_wallet" | "track_payment" | "activity" | "cap_usage" | "save_explore" | null>(null);
-  const activity: ActivityItem[] = [
-    { id: "a1", merchant: "Swiggy", amount: 2000, date: "Today, 11:42 AM", cardId: "hdfc-swiggy", reward: 200, incremental: 100, status: "tracked" },
-    { id: "a2", merchant: "Amazon", amount: 5400, date: "Yesterday, 8:16 PM", cardId: "sbi-cashback", reward: 270, incremental: 216, status: "tracked" },
-    { id: "a3", merchant: "IndiGo flight", amount: 18400, date: "2 Aug, 6:05 PM", cardId: "axis-atlas", reward: 920, incremental: 552, status: "checked" },
-    { id: "a4", merchant: "Blinkit", amount: 1650, date: "31 Jul, 9:20 PM", cardId: "hdfc-swiggy", reward: 83, incremental: 66, status: "tracked" },
-  ];
+  const [pendingAction, setPendingAction] = useState<"save_wallet" | "track_payment" | "activity" | "cap_usage" | "save_explore" | "save_profile" | null>(null);
+  const activity: ActivityItem[] = [];
 
   const walletCards = useMemo(() => CATALOG.filter((card) => walletIds.includes(card.id)), [walletIds]);
+  const requiredProfileValues = [profile.name, normalizedIndianMobile(profile.mobile), profile.city, profile.employment, profile.incomeBand, profile.primaryGoal, profile.feeComfort];
+  const completedProfileFields = requiredProfileValues.filter(Boolean).length;
+  const profileCompletion = Math.round((completedProfileFields / requiredProfileValues.length) * 100);
+  const profileComplete = completedProfileFields === requiredProfileValues.length;
+  const monthlyCardSpend = Object.values(spendProfile).reduce((total, value) => total + (Number(value) || 0), 0);
+  const activityRewardTotal = activity.reduce((total, item) => total + (item.status === "tracked" ? item.reward : 0), 0);
+  const trackedActivityCount = activity.filter((item) => item.status === "tracked").length;
+  const upgradeResult = useMemo(() => {
+    if (!walletCards.length || !monthlyCardSpend) return null;
+    const spendEntries = Object.entries(spendProfile) as [keyof SpendProfile, string][];
+    return CATALOG
+      .filter((candidate) => !walletIds.includes(candidate.id))
+      .map((candidate) => {
+        let monthlyGain = 0;
+        let largestGap = { category: "everyday spend", value: 0 };
+        spendEntries.forEach(([category, rawAmount]) => {
+          const categorySpend = Number(rawAmount) || 0;
+          const currentRate = Math.max(...walletCards.map((card) => card.rates[category] ?? card.baseRate));
+          const candidateRate = candidate.rates[category] ?? candidate.baseRate;
+          const value = categorySpend * Math.max(0, candidateRate - currentRate) / 100;
+          monthlyGain += value;
+          if (value > largestGap.value) largestGap = { category, value };
+        });
+        return { card: candidate, annualValue: Math.round(monthlyGain * 12), reasonCategory: largestGap.category };
+      })
+      .sort((a, b) => b.annualValue - a.annualValue)[0] ?? null;
+  }, [monthlyCardSpend, spendProfile, walletCards, walletIds]);
   const numericAmount = Number(amount.replace(/,/g, "")) || 0;
   const ranked = useMemo(
     () => walletCards.map((card) => recommendationFor(card, merchant, numericAmount)).sort((a, b) => b.value - a.value),
@@ -473,7 +596,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const saved = window.sessionStorage.getItem("cardsmart-guest-session");
+    const saved = window.localStorage.getItem("cardsmart-guest-session");
     if (!saved) return;
     try {
       const guest = JSON.parse(saved) as { walletIds?: string[]; merchant?: string; amount?: string };
@@ -482,19 +605,31 @@ export default function Home() {
       if (guest.walletIds?.length) setWalletIds(guest.walletIds);
       if (guest.merchant) setMerchant(guest.merchant);
       if (guest.amount) setAmount(guest.amount);
-    } catch { window.sessionStorage.removeItem("cardsmart-guest-session"); }
+    } catch { window.localStorage.removeItem("cardsmart-guest-session"); }
   }, []);
 
   const completeAccountAction = useCallback((action = pendingAction) => {
     setAuthBusy(false);
     setAuthOpen(false);
-    setAuthNotice("Wallet saved. Your cards and this recommendation are now linked to your account.");
+    if (action === "save_wallet") setAuthNotice("You’re signed in. Wallet sync across devices is the next setup step.");
+    else if (action === "track_payment") setAuthNotice("Payment tracked in your activity.");
+    else if (action === "save_profile") setAuthNotice("Profile saved. Recommendations can now use these details.");
+    else if (action === "save_explore") {
+      setAuthNotice("Your wallet upgrade has been calculated.");
+      setExploreCalculated(true);
+      setView("explore");
+    }
+    else if (!action) setAuthNotice("You’re logged in.");
     if (action === "track_payment") setConfirmed(true);
     if (action === "activity") setView("activity");
     if (action === "cap_usage" && usageCard) setManualUsage(String(usageCard.trackedValue || ""));
+    if (action === "save_profile") {
+      setProfileSaved(true);
+      setView("profile");
+    }
     setPendingAction(null);
-    window.sessionStorage.removeItem("cardsmart-pending-action");
-    window.sessionStorage.removeItem("cardsmart-guest-session");
+    window.localStorage.removeItem("cardsmart-pending-action");
+    window.localStorage.removeItem("cardsmart-guest-session");
   }, [pendingAction, usageCard]);
 
   useEffect(() => {
@@ -506,10 +641,10 @@ export default function Home() {
       if (!mounted) return;
       setAuthUser(session?.user ?? null);
       if (session?.user && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
-        const savedAction = window.sessionStorage.getItem("cardsmart-pending-action") as typeof pendingAction;
+        const savedAction = window.localStorage.getItem("cardsmart-pending-action") as typeof pendingAction;
         if (savedAction) {
           setPendingAction(savedAction);
-          window.sessionStorage.removeItem("cardsmart-pending-action");
+          window.localStorage.removeItem("cardsmart-pending-action");
           window.setTimeout(() => completeAccountAction(savedAction), 0);
         }
       }
@@ -522,13 +657,45 @@ export default function Home() {
 
   useEffect(() => {
     if (signedIn) return;
-    window.sessionStorage.setItem("cardsmart-guest-session", JSON.stringify({ walletIds, merchant, amount, returnView: view }));
+    window.localStorage.setItem("cardsmart-guest-session", JSON.stringify({ walletIds, merchant, amount, returnView: view }));
   }, [walletIds, merchant, amount, view, signedIn]);
+
+  useEffect(() => {
+    let active = true;
+    if (!authUser) return;
+
+    const loadProfile = async () => {
+      setProfileLoading(true);
+      setProfileError("");
+      const { data, error } = await supabase
+        .from("profiles")
+        .select(PROFILE_COLUMNS)
+        .eq("id", authUser.id)
+        .maybeSingle();
+
+      if (!active) return;
+      if (error) {
+        setProfileError("We couldn’t load your profile. Please refresh and try again.");
+        setProfileLoading(false);
+        return;
+      }
+
+      const row = data as ProfileRow | null;
+      const metadataName = typeof authUser.user_metadata?.name === "string" ? authUser.user_metadata.name : "";
+      const metadataMobile = typeof authUser.user_metadata?.mobile_number === "string" ? authUser.user_metadata.mobile_number : "";
+      setProfile(profileFromDatabase(row, metadataName, metadataMobile));
+      setSpendProfile(spendProfileFromDatabase(row?.monthly_spends ?? null));
+      setProfileLoading(false);
+    };
+
+    void loadProfile();
+    return () => { active = false; };
+  }, [authUser]);
 
   const requireAccount = (action: typeof pendingAction) => {
     if (signedIn) return true;
     setPendingAction(action);
-    if (action) window.sessionStorage.setItem("cardsmart-pending-action", action);
+    if (action) window.localStorage.setItem("cardsmart-pending-action", action);
     setAuthMode("signup");
     setAuthError("");
     setAuthOpen(true);
@@ -538,9 +705,11 @@ export default function Home() {
   const submitAuth = async (event: React.FormEvent) => {
     event.preventDefault();
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(authForm.email);
-    const validMobile = /^[6-9]\d{9}$/.test(authForm.mobile.replace(/\D/g, ""));
+    const fullName = authForm.name.trim().replace(/\s+/g, " ");
+    const mobileNumber = normalizedIndianMobile(authForm.mobile);
+    if (authMode === "signup" && fullName.length < 2) return setAuthError("Enter your full name.");
+    if (authMode === "signup" && !mobileNumber) return setAuthError("Enter a valid 10-digit Indian mobile number.");
     if (!validEmail) return setAuthError("Enter a valid email address.");
-    if (authMode === "signup" && !validMobile) return setAuthError("Enter a valid 10-digit Indian mobile number.");
     if (authForm.password.length < 8) return setAuthError("Password must be at least 8 characters.");
     setAuthError("");
     setAuthBusy(true);
@@ -549,12 +718,11 @@ export default function Home() {
       return setAuthError("Account service is not configured yet.");
     }
     if (authMode === "signup") {
-      const mobile = `+91${authForm.mobile.replace(/\D/g, "")}`;
       const { data, error } = await supabase.auth.signUp({
         email: authForm.email.trim().toLowerCase(),
         password: authForm.password,
         options: {
-          data: { mobile },
+          data: { name: fullName, mobile_number: mobileNumber },
           emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
         },
       });
@@ -576,14 +744,80 @@ export default function Home() {
   const signOut = async () => {
     await supabase.auth.signOut();
     setAuthUser(null);
+    setWalletIds([]);
+    setProfile(EMPTY_PROFILE);
+    setSpendProfile(EMPTY_SPEND_PROFILE);
+    setProfileSaved(false);
+    setExploreCalculated(false);
     setConfirmed(false);
     setView("home");
     setAuthNotice("You’re logged out.");
+    window.localStorage.removeItem("cardsmart-guest-session");
+    window.localStorage.removeItem("cardsmart-pending-action");
   };
 
   const openProtectedView = (nextView: "wallet" | "activity") => {
     if (nextView === "activity" && !requireAccount("activity")) return;
     setView(nextView);
+  };
+
+  const openProfile = () => {
+    if (!signedIn) {
+      setAuthMode("login");
+      setAuthError("");
+      setAuthOpen(true);
+      return;
+    }
+    setView("profile");
+  };
+
+  const saveProfile = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const mobileNumber = normalizedIndianMobile(profile.mobile);
+    if (!profile.name.trim() || !mobileNumber || !profile.city.trim() || !profile.employment || !profile.incomeBand || !profile.primaryGoal || !profile.feeComfort) {
+      setProfileError("Complete the required fields before saving.");
+      return;
+    }
+    setProfileError("");
+    if (!requireAccount("save_profile")) return;
+
+    if (!authUser) return;
+    setProfileSaving(true);
+    const normalizedName = profile.name.trim().replace(/\s+/g, " ");
+    const monthlySpends = Object.fromEntries(
+      Object.entries(spendProfile).map(([category, value]) => [category, Number(value) || 0])
+    );
+    const { error } = await supabase.from("profiles").upsert({
+      id: authUser.id,
+      name: normalizedName,
+      mobile_number: mobileNumber,
+      city: profile.city.trim(),
+      income_range: profile.incomeBand,
+      work_status: profile.employment,
+      primary_card_goal: profile.primaryGoal,
+      annual_fee_comfort: profile.feeComfort,
+      age_range: profile.ageBand || null,
+      credit_score_range: profile.creditScoreBand || null,
+      monthly_spends: monthlySpends,
+    }, { onConflict: "id" });
+
+    if (error) {
+      setProfileSaving(false);
+      setProfileError("Your profile wasn’t saved. Please try again.");
+      return;
+    }
+
+    const { error: metadataError } = await supabase.auth.updateUser({ data: { name: normalizedName, mobile_number: mobileNumber } });
+    if (metadataError) {
+      setProfileSaving(false);
+      setProfileError("Your details were saved, but your display name could not be updated. Please try once more.");
+      return;
+    }
+
+    setProfile((current) => ({ ...current, name: normalizedName, mobile: mobileDigits(mobileNumber), city: current.city.trim() }));
+    setProfileSaving(false);
+    setProfileSaved(true);
+    setAuthNotice("Profile saved. Recommendations can now use these details.");
   };
 
   return (
@@ -612,9 +846,9 @@ export default function Home() {
           <span className="trust-icon"><Icon name="shield" size={18} /></span>
           <div><strong>Your cards stay private</strong><p>We never ask for card numbers, CVV or OTP.</p></div>
         </div>
-        <button className="profile-button" onClick={() => { if (signedIn) void signOut(); else { setAuthMode("login"); setAuthError(""); setAuthOpen(true); } }}>
-          <span className="avatar">{signedIn ? (authUser?.email?.[0] ?? "U").toUpperCase() : <Icon name="user" size={17}/>}</span>
-          <span><strong>{signedIn ? authUser?.email : "Log in"}</strong><small>{signedIn ? "Free account · Log out" : "Save wallet & activity"}</small></span>
+        <button className="profile-button" onClick={openProfile}>
+          <span className="avatar">{signedIn ? (profile.name?.[0] || authUser?.user_metadata?.name?.[0] || authUser?.email?.[0] || "U").toUpperCase() : <Icon name="user" size={17}/>}</span>
+          <span><strong>{signedIn ? (profile.name || authUser?.email) : "Log in"}</strong><small>{signedIn ? (profileComplete ? "View your profile" : "Finish your profile") : "Create your CardSmart profile"}</small></span>
           <Icon name="chevron" size={17} />
         </button>
       </aside>
@@ -624,7 +858,7 @@ export default function Home() {
           <button className="brand" onClick={() => setView("home")} aria-label="CardSmart home">
             <span className="brand-mark"><span>C</span></span><span>CardSmart</span>
           </button>
-          <button className="avatar" aria-label={signedIn ? "Log out" : "Log in"} onClick={() => { if (signedIn) void signOut(); else { setAuthMode("login"); setAuthError(""); setAuthOpen(true); } }}>{signedIn ? (authUser?.email?.[0] ?? "U").toUpperCase() : <Icon name="user" size={17}/>}</button>
+          <button className="avatar" aria-label={signedIn ? "Open profile" : "Log in"} onClick={openProfile}>{signedIn ? (profile.name?.[0] || authUser?.user_metadata?.name?.[0] || authUser?.email?.[0] || "U").toUpperCase() : <Icon name="user" size={17}/>}</button>
         </header>
 
         {view === "home" && (
@@ -668,10 +902,24 @@ export default function Home() {
               </div>
             </section>
 
+            {signedIn && (!walletIds.length || !profileComplete) && (
+              <section className="setup-card">
+                <div className="setup-copy"><span className="mini-label">Set up CardSmart</span><h2>Two things make recommendations yours</h2><p>No card numbers or bank login. Just tell us which cards you own and what matters to you.</p></div>
+                <div className="setup-steps">
+                  <button className={walletIds.length ? "done" : ""} onClick={() => setPickerOpen(true)}>
+                    <span>{walletIds.length ? <Icon name="check" size={16}/> : "1"}</span><div><strong>{walletIds.length ? `${walletIds.length} cards added` : "Add the cards you own"}</strong><small>{walletIds.length ? "Edit wallet" : "So we compare only your cards"}</small></div><Icon name="chevron" size={17}/>
+                  </button>
+                  <button className={profileComplete ? "done" : ""} onClick={() => setView("profile")}>
+                    <span>{profileComplete ? <Icon name="check" size={16}/> : "2"}</span><div><strong>{profileComplete ? "Profile complete" : "Complete your profile"}</strong><small>{profileComplete ? "Review details" : "About 2 minutes"}</small></div><Icon name="chevron" size={17}/>
+                  </button>
+                </div>
+              </section>
+            )}
+
             <section className="wallet-preview">
               <div className="section-heading">
-                <div><span className="mini-label">Your wallet</span><h2>{walletIds.length} cards ready to compare</h2></div>
-                <button className="text-button" onClick={() => setPickerOpen(true)}><Icon name="edit" size={16} /> Edit wallet</button>
+                <div><span className="mini-label">Your wallet</span><h2>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"} ready to compare` : "No cards added yet"}</h2></div>
+                {walletIds.length > 0 && <button className="text-button" onClick={() => setPickerOpen(true)}><Icon name="edit" size={16} /> Edit wallet</button>}
               </div>
               <div className="wallet-strip">
                 {walletCards.map((card, index) => (
@@ -680,7 +928,11 @@ export default function Home() {
                   </div>
                 ))}
                 {!walletCards.length && (
-                  <button className="empty-wallet-card" onClick={() => setPickerOpen(true)}><Icon name="plus" /> Add your cards</button>
+                  <div className="empty-wallet-card">
+                    <span><Icon name="wallet" size={22}/></span>
+                    <div><strong>Your wallet starts empty</strong><p>Add only the cards you actually own. We never need the card number.</p></div>
+                    <button className="secondary-button" onClick={() => setPickerOpen(true)}><Icon name="plus" size={16}/> Add my cards</button>
+                  </div>
                 )}
               </div>
             </section>
@@ -754,11 +1006,28 @@ export default function Home() {
         {view === "wallet" && (
           <div className="wallet-page page-enter">
             <div className="wallet-page-heading">
-              <div><span className="eyebrow">My wallet</span><h1>Your cards, made useful.</h1><p>See what each card is best for and keep reward caps in view.</p></div>
-              <button className="primary-button add-card-button" onClick={() => setPickerOpen(true)}><Icon name="plus" /> Add a card</button>
+              <div><span className="eyebrow">My wallet</span><h1>{walletIds.length ? "Your cards, made useful." : "Start with the cards you own."}</h1><p>{walletIds.length ? "See what each card is best for and keep reward caps in view." : "CardSmart starts empty. Add your actual cards so every comparison is personal and honest."}</p></div>
+              {walletIds.length > 0 && <button className="primary-button add-card-button" onClick={() => setPickerOpen(true)}><Icon name="plus" /> Add a card</button>}
             </div>
-            <section className="wallet-grid">
-              {walletCards.map((card) => (
+            {!walletIds.length ? (
+              <section className="wallet-empty-state">
+                <div className="empty-state-icon"><Icon name="wallet" size={28}/></div>
+                <span className="mini-label">No cards added</span>
+                <h2>Build your wallet in under a minute</h2>
+                <p>Search by bank or card name and select every credit card you currently use. No card number, CVV, expiry or OTP required.</p>
+                <button className="primary-button" onClick={() => setPickerOpen(true)}><Icon name="plus"/> Add my cards</button>
+                <div className="privacy-points"><span><Icon name="check" size={14}/> Only card names</span><span><Icon name="check" size={14}/> Editable anytime</span><span><Icon name="check" size={14}/> No bank access</span></div>
+              </section>
+            ) : (
+              <>
+              {!profileComplete && (
+                <section className="profile-nudge">
+                  <div><span className="mini-label">Next step</span><h2>Your wallet is ready. Now make the advice personal.</h2><p>Add income, spending and reward preferences. It takes about 2 minutes.</p></div>
+                  <button className="primary-button" onClick={openProfile}>Complete my profile <Icon name="arrow"/></button>
+                </section>
+              )}
+              <section className="wallet-grid">
+                {walletCards.map((card) => (
                 <article className="wallet-card" key={card.id}>
                   <CardVisual card={card} />
                   <div className="wallet-card-content">
@@ -772,34 +1041,123 @@ export default function Home() {
                     <button className="card-detail-link" onClick={() => { setUsageCard(card); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update cap usage <Icon name="chevron" size={16} /></button>
                   </div>
                 </article>
-              ))}
-              <button className="wallet-add-tile" onClick={() => setPickerOpen(true)}><span><Icon name="plus" /></span><strong>Add another card</strong><p>Search our card catalogue</p></button>
-            </section>
-            <div className="wallet-disclaimer"><Icon name="info" size={18} /><div><strong>Cap usage is an estimate</strong><p>It is based only on payments you confirm inside CardSmart, not your full statement.</p></div></div>
+                ))}
+                <button className="wallet-add-tile" onClick={() => setPickerOpen(true)}><span><Icon name="plus" /></span><strong>Add another card</strong><p>Search our card catalogue</p></button>
+              </section>
+              <div className="wallet-disclaimer"><Icon name="info" size={18} /><div><strong>Cap usage starts at zero</strong><p>It changes only when you update it or confirm a payment inside CardSmart.</p></div></div>
+              </>
+            )}
           </div>
         )}
 
         {view === "explore" && (
           <div className="product-page page-enter">
             <div className="product-heading"><div><span className="eyebrow"><Icon name="compass" size={15} /> Improve your wallet</span><h1>Which card should you add?</h1><p>We compare a new card against the cards you already own, so you only see genuinely incremental value.</p></div></div>
-            <div className="mode-switch" role="tablist"><button className={exploreMode === "discover" ? "active" : ""} onClick={() => setExploreMode("discover")}>Find a card for me</button><button className={exploreMode === "compare" ? "active" : ""} onClick={() => setExploreMode("compare")}>Check a card I’m considering</button></div>
-            <section className="explore-layout">
-              <div className="spend-card"><span className="mini-label">Your monthly spend</span><h2>Help us calculate real incremental value</h2><p>Approximate numbers are fine. You can update them later.</p>
-                <div className="spend-grid">{Object.entries(spendProfile).map(([key, value]) => <label key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><div className="mini-input"><b>₹</b><input inputMode="numeric" value={value} onChange={(e) => setSpendProfile({ ...spendProfile, [key]: e.target.value.replace(/[^0-9]/g, "") })} /></div></label>)}</div>
-                {exploreMode === "compare" && <label className="considering-field"><span>Card you’re considering</span><div className="input-shell"><Icon name="search"/><input placeholder="Search from 98 cards" /></div></label>}
-                <button className="primary-button full-button" onClick={() => requireAccount("save_explore")}>Calculate and save my best upgrade <Icon name="arrow" /></button>
-              </div>
-              <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Preview result</div><span className="mini-label">Potential wallet upgrade</span><h2>SBI Cashback</h2><div className="annual-value"><strong>+₹4,620</strong><span>estimated value / year<br/>after annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>Your current wallet earns only ~1% on a large share of online shopping.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>Uses the spend entered on this screen and prototype reward rules.</span></div></aside>
-            </section>
+            {!walletIds.length ? (
+              <section className="explore-empty-state">
+                <div className="empty-state-icon"><Icon name="wallet" size={28}/></div><span className="mini-label">Wallet needed first</span><h2>We can’t measure an upgrade without knowing your current cards.</h2><p>Add the cards you own. Then we’ll exclude them and calculate only the additional value a new card can create.</p><button className="primary-button" onClick={() => setPickerOpen(true)}><Icon name="plus"/> Add my current cards</button>
+              </section>
+            ) : (
+              <>
+                <div className="mode-switch" role="tablist"><button className={exploreMode === "discover" ? "active" : ""} onClick={() => { setExploreMode("discover"); setExploreCalculated(false); }}>Find a card for me</button><button className={exploreMode === "compare" ? "active" : ""} onClick={() => { setExploreMode("compare"); setExploreCalculated(false); }}>Check a card I’m considering</button></div>
+                <section className="explore-layout">
+                  <div className="spend-card"><span className="mini-label">Your monthly spend</span><h2>Help us calculate real incremental value</h2><p>Approximate numbers are fine. These values also update your recommendation profile.</p>
+                    <div className="spend-grid">{Object.entries(spendProfile).map(([key, value]) => <label key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><div className="mini-input"><b>₹</b><input inputMode="numeric" value={value} onChange={(e) => { setSpendProfile({ ...spendProfile, [key]: e.target.value.replace(/[^0-9]/g, "") }); setExploreCalculated(false); }} placeholder="0" /></div></label>)}</div>
+                    {exploreMode === "compare" && <label className="considering-field"><span>Card you’re considering</span><div className="input-shell"><Icon name="search"/><input placeholder={`Search from ${CATALOG.length} cards`} /></div></label>}
+                    <button className="primary-button full-button" disabled={profileComplete && !monthlyCardSpend} onClick={() => { if (!profileComplete) { openProfile(); return; } if (requireAccount("save_explore")) setExploreCalculated(true); }}>{!profileComplete ? "Complete profile to see my upgrade" : !monthlyCardSpend ? "Add monthly spend to continue" : "Calculate my best upgrade"} <Icon name="arrow" /></button>
+                  </div>
+                  {exploreCalculated && upgradeResult ? (
+                    <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Calculated result</div><span className="mini-label">Potential wallet upgrade</span><h2>{upgradeResult.card.bank} {upgradeResult.card.name}</h2><div className="annual-value"><strong>+₹{upgradeResult.annualValue.toLocaleString("en-IN")}</strong><span>estimated extra value / year<br/>before annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>It creates the largest estimated improvement on your {upgradeResult.reasonCategory} spend versus the cards already in your wallet.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>Based on the wallet, monthly spend and prototype reward rules entered here.</span></div></aside>
+                  ) : (
+                    <aside className="upgrade-preview upgrade-preview--locked"><div className="locked-icon"><Icon name={profileComplete ? "spark" : "user"} size={22}/></div><span className="mini-label">{profileComplete ? "Ready when you are" : "Personalisation needed"}</span><h2>No made-up recommendation here.</h2><p>{profileComplete ? "Enter your typical monthly spend and calculate. We’ll compare every eligible new card against your actual wallet." : "Complete your profile and monthly spend first. Then CardSmart can explain exactly where a new card improves your current wallet."}</p>{!profileComplete && <button className="secondary-button" onClick={openProfile}>Complete my profile <Icon name="arrow" size={16}/></button>}</aside>
+                  )}
+                </section>
+              </>
+            )}
+          </div>
+        )}
+
+        {view === "profile" && signedIn && (
+          <div className="product-page profile-page page-enter">
+            <div className="profile-page-heading">
+              <div><span className="eyebrow"><Icon name="user" size={15}/> Recommendation profile</span><h1>Make every answer fit you.</h1><p>These details help CardSmart judge value, fees and suitability. We don’t ask for PAN, card numbers or bank access.</p></div>
+              <div className="profile-progress"><div><span>Profile completion</span><strong>{profileCompletion}%</strong></div><div className="profile-progress-track"><span style={{ width: `${profileCompletion}%` }}/></div><small>{profileComplete ? "Ready for personalised recommendations" : `${requiredProfileValues.length - completedProfileFields} required details left`}</small></div>
+            </div>
+
+            {profileSaved && <div className="auth-success profile-success"><Icon name="check" size={17}/><span>Profile saved. Your next recommendation can use these details.</span><button onClick={() => setProfileSaved(false)}><Icon name="close" size={15}/></button></div>}
+            {profileLoading && <div className="profile-loading"><span className="profile-loading-dot"/>Loading your saved profile…</div>}
+
+            <div className="profile-layout">
+              <form className="profile-form" onSubmit={saveProfile}>
+                <section className="profile-form-section">
+                  <div className="profile-section-heading"><span>1</span><div><h2>About you</h2><p>Basic context for relevant card and eligibility suggestions.</p></div></div>
+                  <div className="profile-fields three-columns">
+                    <label><span>Full name *</span><input value={profile.name} onChange={(e) => setProfile({...profile, name:e.target.value})} placeholder="Your name" autoComplete="name"/></label>
+                    <label><span>Mobile number *</span><input type="tel" inputMode="numeric" value={profile.mobile} onChange={(e) => setProfile({...profile, mobile:mobileDigits(e.target.value)})} placeholder="10-digit mobile number" autoComplete="tel-national" maxLength={10}/></label>
+                    <label><span>Age range <em>Optional</em></span><select value={profile.ageBand} onChange={(e) => setProfile({...profile, ageBand:e.target.value})}><option value="">Select age range</option><option>18–24</option><option>25–34</option><option>35–44</option><option>45–54</option><option>55+</option></select></label>
+                    <label><span>City *</span><input value={profile.city} onChange={(e) => setProfile({...profile, city:e.target.value})} placeholder="e.g. Gurgaon" autoComplete="address-level2"/></label>
+                  </div>
+                </section>
+
+                <section className="profile-form-section">
+                  <div className="profile-section-heading"><span>2</span><div><h2>Financial fit</h2><p>Enough to screen suggestions, without collecting sensitive financial documents.</p></div></div>
+                  <div className="profile-fields three-columns">
+                    <label><span>Work status *</span><select value={profile.employment} onChange={(e) => setProfile({...profile, employment:e.target.value})}><option value="">Select work status</option><option>Salaried</option><option>Self-employed professional</option><option>Business owner</option><option>Student</option><option>Retired</option><option>Other</option></select></label>
+                    <label><span>Monthly take-home income *</span><select value={profile.incomeBand} onChange={(e) => setProfile({...profile, incomeBand:e.target.value})}><option value="">Select income range</option><option>Below ₹25,000</option><option>₹25,000–₹49,999</option><option>₹50,000–₹99,999</option><option>₹1,00,000–₹1,99,999</option><option>₹2,00,000–₹4,99,999</option><option>₹5,00,000+</option></select></label>
+                    <label><span>Credit score range <em>Optional</em></span><select value={profile.creditScoreBand} onChange={(e) => setProfile({...profile, creditScoreBand:e.target.value})}><option value="">I don’t know</option><option>Below 650</option><option>650–699</option><option>700–749</option><option>750–799</option><option>800+</option><option>New to credit</option></select></label>
+                  </div>
+                </section>
+
+                <section className="profile-form-section">
+                  <div className="profile-section-heading"><span>3</span><div><h2>What you want from a card</h2><p>This changes what “best” means for you.</p></div></div>
+                  <div className="profile-fields two-columns">
+                    <label><span>Primary goal *</span><select value={profile.primaryGoal} onChange={(e) => setProfile({...profile, primaryGoal:e.target.value})}><option value="">Choose your priority</option><option>Simple cashback</option><option>Travel rewards</option><option>Premium benefits</option><option>Low fees</option><option>Build credit history</option></select></label>
+                    <label><span>Annual fee comfort *</span><select value={profile.feeComfort} onChange={(e) => setProfile({...profile, feeComfort:e.target.value})}><option value="">Choose fee comfort</option><option>Lifetime free only</option><option>Up to ₹1,000</option><option>Up to ₹3,000</option><option>Up to ₹10,000</option><option>Any fee if value is higher</option></select></label>
+                  </div>
+                </section>
+
+                <section className="profile-form-section">
+                  <div className="profile-section-heading"><span>4</span><div><h2>Typical monthly card spend</h2><p>Approximate amounts are enough. Leave a category at zero if you rarely use a card there.</p></div></div>
+                  <div className="profile-spend-grid">{Object.entries(spendProfile).map(([key, value]) => <label key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><div><b>₹</b><input inputMode="numeric" value={value} onChange={(e) => { setSpendProfile({...spendProfile, [key]:e.target.value.replace(/[^0-9]/g, "")}); setExploreCalculated(false); }} placeholder="0"/></div></label>)}</div>
+                  <div className="spend-total"><span>Estimated monthly card spend</span><strong>₹{monthlyCardSpend.toLocaleString("en-IN")}</strong></div>
+                </section>
+
+                {profileError && <p className="profile-form-error"><Icon name="info" size={15}/>{profileError}</p>}
+                <div className="profile-form-actions"><button type="button" className="secondary-button" onClick={() => setView("home")}>Cancel</button><button type="submit" className="primary-button" disabled={profileLoading || profileSaving}>{profileSaving ? "Saving…" : "Save my profile"} {!profileSaving && <Icon name="check"/>}</button></div>
+              </form>
+
+              <aside className="profile-summary-card">
+                <span className="mini-label">What CardSmart knows</span><h2>Your profile at a glance</h2>
+                <div className="profile-summary-table">
+                  <div><span>Account</span><strong>{authUser?.email}</strong></div>
+                  <div><span>Name</span><strong>{profile.name || authUser?.user_metadata?.name || "Not added"}</strong></div>
+                  <div><span>Mobile</span><strong>{profile.mobile ? `+91 ${profile.mobile}` : "Not added"}</strong></div>
+                  <div><span>Location</span><strong>{profile.city || "Not added"}</strong></div>
+                  <div><span>Work</span><strong>{profile.employment || "Not added"}</strong></div>
+                  <div><span>Income</span><strong>{profile.incomeBand || "Not added"}</strong></div>
+                  <div><span>Credit score</span><strong>{profile.creditScoreBand || "Not shared"}</strong></div>
+                  <div><span>Primary goal</span><strong>{profile.primaryGoal || "Not added"}</strong></div>
+                  <div><span>Fee comfort</span><strong>{profile.feeComfort || "Not added"}</strong></div>
+                  <div><span>Monthly card spend</span><strong>{monthlyCardSpend ? `₹${monthlyCardSpend.toLocaleString("en-IN")}` : "Not added"}</strong></div>
+                  <div><span>Cards owned</span><strong>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"}` : "None added"}</strong></div>
+                </div>
+                <div className="profile-why"><Icon name="shield" size={18}/><div><strong>Used for recommendations only</strong><p>CardSmart does not need exact income, PAN, card numbers, CVV, expiry dates or banking OTPs.</p></div></div>
+                <button className="profile-logout" onClick={() => void signOut()}>Log out of CardSmart</button>
+              </aside>
+            </div>
           </div>
         )}
 
         {view === "activity" && (
           <div className="product-page page-enter">
-            <div className="product-heading activity-heading"><div><span className="eyebrow"><Icon name="clock" size={15} /> Your decisions</span><h1>Activity</h1><p>Past recommendations and payments you chose to track.</p></div><div className="reward-total"><span>Tracked expected rewards</span><strong>₹553</strong><small>across 3 confirmed payments</small></div></div>
-            <div className="activity-toolbar"><div className="activity-tabs"><button className="active">All</button><button>Tracked payments</button><button>Only checked</button></div><button className="secondary-button compact-button"><Icon name="tune" size={15}/> Filter</button></div>
-            <section className="activity-list">{activity.map((item) => { const card = CATALOG.find((c) => c.id === item.cardId)!; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {shortBankName(card.bank)} {card.name}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward}</strong><small>₹{item.incremental} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => { setMerchant(item.merchant); setAmount(String(item.amount)); setView("home"); }} aria-label={`Repeat ${item.merchant} calculation`}><Icon name="chevron"/></button></article>; })}</section>
-            <p className="estimate-note"><Icon name="info" size={15}/> “Expected rewards” are estimates. CardSmart does not have access to your bank statement in this prototype.</p>
+            <div className="product-heading activity-heading"><div><span className="eyebrow"><Icon name="clock" size={15} /> Your decisions</span><h1>Activity</h1><p>Past recommendations and payments you chose to track.</p></div>{activity.length > 0 && <div className="reward-total"><span>Tracked expected rewards</span><strong>₹{activityRewardTotal.toLocaleString("en-IN")}</strong><small>across {trackedActivityCount} confirmed {trackedActivityCount === 1 ? "payment" : "payments"}</small></div>}</div>
+            {activity.length ? (
+              <><div className="activity-toolbar"><div className="activity-tabs"><button className="active">All</button><button>Tracked payments</button><button>Only checked</button></div><button className="secondary-button compact-button"><Icon name="tune" size={15}/> Filter</button></div>
+              <section className="activity-list">{activity.map((item) => { const card = CATALOG.find((c) => c.id === item.cardId)!; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {shortBankName(card.bank)} {card.name}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward}</strong><small>₹{item.incremental} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => { setMerchant(item.merchant); setAmount(String(item.amount)); setView("home"); }} aria-label={`Repeat ${item.merchant} calculation`}><Icon name="chevron"/></button></article>; })}</section>
+              <p className="estimate-note"><Icon name="info" size={15}/> “Expected rewards” are estimates. CardSmart does not have access to your bank statement in this prototype.</p></>
+            ) : (
+              <section className="activity-empty-state"><div className="empty-state-icon"><Icon name="clock" size={28}/></div><span className="mini-label">Nothing tracked yet</span><h2>Your activity will build from your real decisions.</h2><p>Check a payment, choose a recommended card and confirm what you used. We won’t show sample transactions as if they were yours.</p><button className="primary-button" onClick={() => setView("home")}>Check my first payment <Icon name="arrow"/></button></section>
+            )}
           </div>
         )}
       </main>
@@ -884,9 +1242,10 @@ export default function Home() {
               <>
                 <span className="mini-label">{authMode === "signup" ? "One quick step" : "Welcome back"}</span>
                 <h2 id="auth-title">{authMode === "signup" ? "Create your account" : "Log in to CardSmart"}</h2>
-                <p>{authMode === "signup" ? "Save your cards, recommendations and cap usage across devices." : "Access your saved wallet and recommendation history."}</p>
+                <p>{authMode === "signup" ? "Create your profile for recommendations that fit your goals and spending." : "Access your saved recommendation profile."}</p>
                 <form className="auth-form" onSubmit={submitAuth}>
-                  {authMode === "signup" && <label>Mobile number<div className="auth-input"><span>+91</span><input inputMode="numeric" autoComplete="tel" placeholder="98765 43210" value={authForm.mobile} onChange={(e) => setAuthForm({...authForm, mobile:e.target.value})}/></div></label>}
+                  {authMode === "signup" && <label>Full name<div className="auth-input"><input autoComplete="name" placeholder="Your full name" value={authForm.name} onChange={(e) => setAuthForm({...authForm, name:e.target.value})}/></div></label>}
+                  {authMode === "signup" && <label>Mobile number *<div className="auth-input"><span>+91</span><input type="tel" inputMode="numeric" autoComplete="tel-national" placeholder="10-digit mobile number" maxLength={10} value={authForm.mobile} onChange={(e) => setAuthForm({...authForm, mobile:mobileDigits(e.target.value)})}/></div></label>}
                   <label>Email address<div className="auth-input"><input type="email" autoComplete="email" placeholder="you@example.com" value={authForm.email} onChange={(e) => setAuthForm({...authForm, email:e.target.value})}/></div></label>
                   <label>Password<div className="auth-input"><input type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} placeholder={authMode === "signup" ? "At least 8 characters" : "Your password"} value={authForm.password} onChange={(e) => setAuthForm({...authForm, password:e.target.value})}/></div></label>
                   {authError && <p className="auth-error">{authError}</p>}
@@ -895,7 +1254,7 @@ export default function Home() {
                 <button className="auth-switch" onClick={() => { setAuthMode(authMode === "signup" ? "login" : "signup"); setAuthError(""); }}>
                   {authMode === "signup" ? "Already have an account? Log in" : "New to CardSmart? Create account"}
                 </button>
-                <p className="auth-terms">By continuing, you agree to CardSmart’s Terms and Privacy Policy. We never ask for card numbers, CVV or banking OTPs.</p>
+                <p className="auth-terms">By continuing, you agree to CardSmart’s Terms and Privacy Policy and essential account updates by email or SMS. Marketing or WhatsApp messages require separate consent.</p>
                 <div className="prototype-note"><Icon name="info" size={14}/><span>Your account is protected by email verification. We never ask for card numbers, CVV or banking OTPs.</span></div>
               </>
             )}
