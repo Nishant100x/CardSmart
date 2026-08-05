@@ -1,5 +1,11 @@
 # CardSmart V2 for Netlify
 
+## Loading-state reliability
+
+- The Supabase auth listener stays stable instead of resubscribing on app-state changes.
+- Stale wallet, profile, and activity requests cannot control the latest loading state.
+- Data loads time out after 15 seconds and show a recoverable error instead of spinning forever.
+
 ## Local setup
 
 1. Copy `.env.example` to `.env.local`.

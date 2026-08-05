@@ -525,6 +525,24 @@ function shortBankName(bank: string) {
   return bank.replace(" Bank", "").replace(" Card", "");
 }
 
+const DATA_LOAD_TIMEOUT_MS = 15000;
+
+async function withDataLoadTimeout<T>(request: PromiseLike<T>): Promise<T> {
+  let timeoutId: ReturnType<typeof window.setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(
+      () => reject(new Error("CardSmart data request timed out")),
+      DATA_LOAD_TIMEOUT_MS,
+    );
+  });
+
+  try {
+    return await Promise.race([Promise.resolve(request), timeout]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
 function recommendationFor(card: CardData, merchant: string, amount: number) {
   const normalized = merchant.toLowerCase();
   const merchantMatch = Object.entries(card.merchantRates ?? {}).find(([key]) => normalized.includes(key));
@@ -578,6 +596,10 @@ export default function Home() {
   const walletIdsRef = useRef(walletIds);
   const walletAuthSyncRef = useRef(false);
   const authSubmitInProgressRef = useRef(false);
+  const walletLoadRequestRef = useRef(0);
+  const activityLoadRequestRef = useRef(0);
+  const profileLoadRequestRef = useRef(0);
+  const completeAccountActionRef = useRef<(action?: typeof pendingAction, signedInUserId?: string) => Promise<void>>(async () => {});
   const walletCards = useMemo(() => CATALOG
     .filter((card) => walletIds.includes(card.id))
     .map((card) => {
@@ -740,20 +762,29 @@ export default function Home() {
   }, []);
 
   const loadWallet = useCallback(async (userId: string) => {
+    const requestId = ++walletLoadRequestRef.current;
     setWalletLoading(true);
     setWalletError("");
-    const { data, error } = await supabase
-      .from("cards")
-      .select(WALLET_COLUMNS)
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true });
-    setWalletLoading(false);
-    if (error) {
+    try {
+      const { data, error } = await withDataLoadTimeout(supabase
+        .from("cards")
+        .select(WALLET_COLUMNS)
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true }));
+      if (requestId !== walletLoadRequestRef.current) return false;
+      if (error) {
+        setWalletError("We couldn’t load your wallet. Please try again.");
+        return false;
+      }
+      applyWalletRows((data ?? []) as WalletRow[]);
+      return true;
+    } catch {
+      if (requestId !== walletLoadRequestRef.current) return false;
       setWalletError("We couldn’t load your wallet. Please refresh and try again.");
       return false;
+    } finally {
+      if (requestId === walletLoadRequestRef.current) setWalletLoading(false);
     }
-    applyWalletRows((data ?? []) as WalletRow[]);
-    return true;
   }, [applyWalletRows]);
 
   const persistWallet = useCallback(async (userId: string, requestedIds: string[]) => {
@@ -934,21 +965,26 @@ export default function Home() {
     if (walletSaved) window.localStorage.removeItem("cardsmart-guest-session");
   }, [authUser?.id, currentInteractionId, pendingAction, persistInteraction, persistWallet, usageCard]);
 
+  completeAccountActionRef.current = completeAccountAction;
+
   useEffect(() => {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
-      if (mounted) setAuthUser(data.session?.user ?? null);
+      if (!mounted) return;
+      const nextUser = data.session?.user ?? null;
+      setAuthUser((current) => current?.id === nextUser?.id ? current : nextUser);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return;
-      setAuthUser(session?.user ?? null);
+      const nextUser = session?.user ?? null;
+      setAuthUser((current) => current?.id === nextUser?.id ? current : nextUser);
       if (session?.user && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
         const savedAction = window.localStorage.getItem("cardsmart-pending-action") as typeof pendingAction;
         if (savedAction === "save_wallet") walletAuthSyncRef.current = true;
         if (savedAction && !authSubmitInProgressRef.current) {
           setPendingAction(savedAction);
           window.localStorage.removeItem("cardsmart-pending-action");
-          window.setTimeout(() => void completeAccountAction(savedAction, session.user.id), 0);
+          window.setTimeout(() => void completeAccountActionRef.current(savedAction, session.user.id), 0);
         }
       }
     });
@@ -956,7 +992,7 @@ export default function Home() {
       mounted = false;
       listener.subscription.unsubscribe();
     };
-  }, [completeAccountAction]);
+  }, []);
 
   useEffect(() => {
     if (signedIn) return;
@@ -965,6 +1001,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!authUser) {
+      walletLoadRequestRef.current += 1;
       setWalletRows({});
       setWalletLoading(false);
       return;
@@ -974,65 +1011,80 @@ export default function Home() {
   }, [authUser, loadWallet]);
 
   useEffect(() => {
-    let active = true;
-    if (!authUser) return;
+    if (!authUser) {
+      profileLoadRequestRef.current += 1;
+      setProfileLoading(false);
+      return;
+    }
+    const requestId = ++profileLoadRequestRef.current;
 
     const loadProfile = async () => {
       setProfileLoading(true);
       setProfileError("");
-      const { data, error } = await supabase
-        .from("profiles")
-        .select(PROFILE_COLUMNS)
-        .eq("id", authUser.id)
-        .maybeSingle();
+      try {
+        const { data, error } = await withDataLoadTimeout(supabase
+          .from("profiles")
+          .select(PROFILE_COLUMNS)
+          .eq("id", authUser.id)
+          .maybeSingle());
 
-      if (!active) return;
-      if (error) {
+        if (requestId !== profileLoadRequestRef.current) return;
+        if (error) {
+          setProfileError("We couldn’t load your profile. Please try again.");
+          return;
+        }
+
+        const row = data as ProfileRow | null;
+        const metadataName = typeof authUser.user_metadata?.name === "string" ? authUser.user_metadata.name : "";
+        const metadataMobile = typeof authUser.user_metadata?.mobile_number === "string" ? authUser.user_metadata.mobile_number : "";
+        setProfile(profileFromDatabase(row, metadataName, metadataMobile));
+        setSpendProfile(spendProfileFromDatabase(row?.monthly_spends ?? null));
+      } catch {
+        if (requestId !== profileLoadRequestRef.current) return;
         setProfileError("We couldn’t load your profile. Please refresh and try again.");
-        setProfileLoading(false);
-        return;
+      } finally {
+        if (requestId === profileLoadRequestRef.current) setProfileLoading(false);
       }
-
-      const row = data as ProfileRow | null;
-      const metadataName = typeof authUser.user_metadata?.name === "string" ? authUser.user_metadata.name : "";
-      const metadataMobile = typeof authUser.user_metadata?.mobile_number === "string" ? authUser.user_metadata.mobile_number : "";
-      setProfile(profileFromDatabase(row, metadataName, metadataMobile));
-      setSpendProfile(spendProfileFromDatabase(row?.monthly_spends ?? null));
-      setProfileLoading(false);
     };
 
     void loadProfile();
-    return () => { active = false; };
   }, [authUser]);
 
   useEffect(() => {
-    let active = true;
     if (!authUser) {
+      activityLoadRequestRef.current += 1;
       setActivity([]);
+      setActivityLoading(false);
       return;
     }
+    const requestId = ++activityLoadRequestRef.current;
 
     const loadActivity = async () => {
       setActivityLoading(true);
       setActivityError("");
-      const { data, error } = await supabase
-        .from("interactions")
-        .select(INTERACTION_COLUMNS)
-        .eq("user_id", authUser.id)
-        .order("created_at", { ascending: false })
-        .limit(100);
+      try {
+        const { data, error } = await withDataLoadTimeout(supabase
+          .from("interactions")
+          .select(INTERACTION_COLUMNS)
+          .eq("user_id", authUser.id)
+          .order("created_at", { ascending: false })
+          .limit(100));
 
-      if (!active) return;
-      setActivityLoading(false);
-      if (error) {
+        if (requestId !== activityLoadRequestRef.current) return;
+        if (error) {
+          setActivityError("We couldn’t load your saved activity. Please try again.");
+          return;
+        }
+        setActivity(((data ?? []) as InteractionRow[]).map(activityFromDatabase));
+      } catch {
+        if (requestId !== activityLoadRequestRef.current) return;
         setActivityError("We couldn’t load your saved activity. Please refresh and try again.");
-        return;
+      } finally {
+        if (requestId === activityLoadRequestRef.current) setActivityLoading(false);
       }
-      setActivity(((data ?? []) as InteractionRow[]).map(activityFromDatabase));
     };
 
     void loadActivity();
-    return () => { active = false; };
   }, [authUser]);
 
   const requireAccount = (action: typeof pendingAction) => {
