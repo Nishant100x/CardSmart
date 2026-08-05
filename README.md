@@ -1,5 +1,17 @@
 # CardSmart V2 for Netlify
 
+## V9 premium product system
+
+- Replaces the dashboard-like left sidebar with a restrained top navigation on desktop and a compact bottom navigation on mobile.
+- Uses one system sans-serif type family, a documented spacing/radius scale, higher contrast and consistent surface geometry.
+- Rebuilds Home as one immersive “know the right card before you pay” experience with a live recommendation preview.
+- Keeps the default payment journey to two inputs: where the user is paying and how much.
+- Rewrites primary copy in user language and moves rule confidence, cap mechanics and issuer assumptions into supporting details.
+- Results lead with the card to use, expected reward and money gained versus the next-best card.
+- Applies the same typography, spacing, surface and interaction rules across Wallet, Find a card, Savings, Profile and account modals.
+- Preserves the V7 recommendation engine, the full 97-card catalogue and all existing Supabase persistence behaviour.
+- No new Supabase migration is required for V9.
+
 ## V8 payment-copilot UX
 
 - Home is now a single, high-focus “before you pay” command surface instead of a dense rewards form.

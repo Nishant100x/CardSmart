@@ -1368,43 +1368,33 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <button className="brand" onClick={() => setView("home")} aria-label="CardSmart home">
-          <span className="brand-mark"><span>C</span></span>
-          <span className="brand-copy"><strong>CardSmart</strong><small>Pay smarter</small></span>
-        </button>
-        <nav className="side-nav" aria-label="Primary navigation">
-          <button className={view === "home" || view === "result" ? "active" : ""} onClick={() => setView("home")}>
-            <Icon name="spark" /> <span>Pay smart</span>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <button className="brand" onClick={() => setView("home")} aria-label="CardSmart home">
+            <span className="brand-mark"><span>C</span></span>
+            <span className="brand-copy"><strong>CardSmart</strong><small>Pick right. Pay smart.</small></span>
           </button>
-          <button className={view === "wallet" ? "active" : ""} onClick={() => openProtectedView("wallet")}>
-            <Icon name="wallet" /> <span>My cards</span><small>{walletIds.length}</small>
+          <nav className="side-nav" aria-label="Primary navigation">
+            <button className={view === "home" || view === "result" ? "active" : ""} onClick={() => setView("home")}>
+              <span>Pay</span>
+            </button>
+            <button className={view === "wallet" ? "active" : ""} onClick={() => openProtectedView("wallet")}>
+              <span>My cards</span><small>{walletIds.length}</small>
+            </button>
+            <button className={view === "explore" ? "active" : ""} onClick={() => setView("explore")}>
+              <span>Find a card</span>
+            </button>
+            <button className={view === "activity" ? "active" : ""} onClick={() => openProtectedView("activity")}>
+              <span>Savings</span>{activity.length > 0 && <small>{activity.length}</small>}
+            </button>
+          </nav>
+          <button className="profile-button" onClick={openProfile}>
+            <span className="avatar">{signedIn ? (profile.name?.[0] || authUser?.user_metadata?.name?.[0] || authUser?.email?.[0] || "U").toUpperCase() : <Icon name="user" size={17}/>}</span>
+            <span><strong>{signedIn ? (profile.name || authUser?.email) : "Log in"}</strong><small>{signedIn ? "Profile" : "Save your wallet"}</small></span>
+            <Icon name="chevron" size={16} />
           </button>
-          <button className={view === "explore" ? "active" : ""} onClick={() => setView("explore")}>
-            <Icon name="compass" /> <span>Get a card</span>
-          </button>
-          <button className={view === "activity" ? "active" : ""} onClick={() => openProtectedView("activity")}>
-            <Icon name="clock" /> <span>My savings</span><small>{activity.length}</small>
-          </button>
-        </nav>
-        <div className="sidebar-spacer" />
-        {signedIn && trackedActivityCount > 0 && (
-          <button className="sidebar-impact" onClick={() => openProtectedView("activity")}>
-            <span>Extra value tracked</span>
-            <strong>₹{activityIncrementalTotal.toLocaleString("en-IN")}</strong>
-            <small>from {trackedActivityCount} smart {trackedActivityCount === 1 ? "payment" : "payments"}</small>
-          </button>
-        )}
-        <div className="trust-note">
-          <span className="trust-icon"><Icon name="shield" size={18} /></span>
-          <div><strong>Your cards stay private</strong><p>We never ask for card numbers, CVV or OTP.</p></div>
         </div>
-        <button className="profile-button" onClick={openProfile}>
-          <span className="avatar">{signedIn ? (profile.name?.[0] || authUser?.user_metadata?.name?.[0] || authUser?.email?.[0] || "U").toUpperCase() : <Icon name="user" size={17}/>}</span>
-          <span><strong>{signedIn ? (profile.name || authUser?.email) : "Log in"}</strong><small>{signedIn ? (profileComplete ? "View your profile" : "Finish your profile") : "Create your CardSmart profile"}</small></span>
-          <Icon name="chevron" size={17} />
-        </button>
-      </aside>
+      </header>
 
       <main className="main-content">
         <header className="mobile-header">
@@ -1417,33 +1407,45 @@ export default function Home() {
         {view === "home" && (
           <div className="home-page page-enter">
             {authNotice && <div className="auth-success"><Icon name="check" size={17}/><span>{authNotice}</span><button onClick={() => setAuthNotice("")}><Icon name="close" size={15}/></button></div>}
-            <section className="hero-command-layout">
-              <div className="hero-copy">
-                <span className="eyebrow"><Icon name="spark" size={15} /> Your payment copilot</span>
-                <h1>Never use the<br className="desktop-break" /> wrong card again.</h1>
-                <p>Before you pay, tell CardSmart what you’re buying. Get one clear card choice, the reward and the reason in seconds.</p>
+            <section className="home-stage">
+              <div className="hero-command-layout">
+                <div className="hero-copy">
+                  <span className="eyebrow"><Icon name="spark" size={15} /> Your cards can do better</span>
+                  <h1>Know the right card<br className="desktop-break" /> before you pay.</h1>
+                  <p>Enter where you’re paying and the amount. We’ll compare the cards you own and show the one that earns you the most.</p>
+                </div>
+                <aside className={`hero-verdict ${winner ? "hero-verdict--ready" : ""}`}>
+                  {winner ? (
+                    <>
+                      <span className="hero-verdict-label">Best for this payment</span>
+                      <CardVisual card={winner.card} compact />
+                      <div className="hero-verdict-copy"><strong>{shortBankName(winner.card.bank)} {winner.card.name}</strong><span>Earn about ₹{winner.value.toLocaleString("en-IN")}</span></div>
+                      {runnerUp && winner.value > runnerUp.value && <div className="hero-extra"><Icon name="spark" size={15}/><strong>₹{(winner.value - runnerUp.value).toLocaleString("en-IN")} more</strong><span>than your next best card</span></div>}
+                    </>
+                  ) : (
+                    <>
+                      <span className="hero-verdict-label">One clear answer</span>
+                      <div className="hero-card-stack" aria-hidden="true">
+                        {CATALOG.slice(0, 3).map((card, index) => <span key={card.id} style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, transform: `translateY(${index * 18}px) rotate(${(index - 1) * 6}deg)` }}/>) }
+                      </div>
+                      <div className="hero-verdict-copy"><strong>Add the cards you own</strong><span>We’ll rank only the cards you can actually use.</span></div>
+                    </>
+                  )}
+                </aside>
               </div>
-              <aside className="impact-card">
-                <div className="impact-orbit"><span><Icon name="spark" size={20}/></span></div>
-                <span className="impact-label">{trackedActivityCount ? "Extra value tracked" : "What CardSmart does"}</span>
-                {trackedActivityCount ? <strong>₹{activityIncrementalTotal.toLocaleString("en-IN")}</strong> : <strong>One better choice.</strong>}
-                <p>{trackedActivityCount ? `Across ${trackedActivityCount} confirmed ${trackedActivityCount === 1 ? "payment" : "payments"}.` : "Every time you’re about to pay."}</p>
-                <div className="impact-proof"><span>{walletIds.length || "–"}<small>Your cards</small></span><span>{CATALOG.length}<small>Cards modelled</small></span></div>
-              </aside>
-            </section>
 
-            <section className="payment-panel">
-              <div className="command-heading"><span className="command-dot"/><div><span>Ask CardSmart</span><strong>What are you paying for?</strong></div></div>
+              <div className="payment-panel">
+              <div className="command-heading"><span className="command-dot"/><div><span>Ready when you are</span><strong>Where are you paying?</strong></div></div>
               <form onSubmit={submitPayment}>
                 <div className="field-group">
-                  <label htmlFor="merchant">Merchant or purchase</label>
+                  <label htmlFor="merchant">Store, app or purchase</label>
                   <div className="input-shell input-shell--merchant">
                     <Icon name="search" />
-                    <input id="merchant" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="Swiggy, Amazon, flight tickets…" autoComplete="off" />
+                    <input id="merchant" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="e.g. Swiggy, Amazon or flight tickets" autoComplete="off" />
                   </div>
                 </div>
                 <div className="field-group amount-group">
-                  <label htmlFor="amount">Amount</label>
+                  <label htmlFor="amount">How much?</label>
                   <div className="input-shell input-shell--amount">
                     <span className="currency">₹</span>
                     <input id="amount" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0" />
@@ -1451,10 +1453,10 @@ export default function Home() {
                 </div>
                 {formError && <p className="form-error">{formError}</p>}
                 <button className="primary-button find-button" type="submit">
-                  Tell me which card <Icon name="arrow" />
+                  Find my best card <Icon name="arrow" />
                 </button>
                 <details className="payment-settings">
-                  <summary><Icon name="tune" size={16}/><span>Fine-tune category or payment method</span><small>Optional</small><Icon name="chevron" size={15}/></summary>
+                  <summary><Icon name="tune" size={16}/><span>Card or UPI? Choose only if it matters</span><small>Optional</small><Icon name="chevron" size={15}/></summary>
                   <div className="payment-context">
                     <label>
                       <span>Spend category</span>
@@ -1484,12 +1486,12 @@ export default function Home() {
                         <option value="app">Required app / partner checkout</option>
                       </select>
                     </label>
-                    <p><Icon name="info" size={14}/> Only change this when the reward depends on category or payment route.</p>
+                    <p><Icon name="info" size={14}/> We usually detect this automatically. Change it only if you know exactly how you’ll pay.</p>
                   </div>
                 </details>
               </form>
               <div className="example-row">
-                <span>Popular checks</span>
+                <span>Try an example</span>
                 <div className="example-chips">
                   <button onClick={() => chooseExample("Swiggy", "2000")}>Swiggy · ₹2,000</button>
                   <button onClick={() => chooseExample("Amazon", "5000")}>Amazon · ₹5,000</button>
@@ -1497,11 +1499,13 @@ export default function Home() {
                   <button onClick={() => chooseExample("Groceries", "3500")}>Groceries · ₹3,500</button>
                 </div>
               </div>
+              </div>
+              <div className="home-trust-row"><span><Icon name="shield" size={16}/> No card number, CVV or OTP</span><span><Icon name="check" size={16}/> Compares only cards you own</span><span><Icon name="spark" size={16}/> Shows the money difference</span></div>
             </section>
 
             {signedIn && (!walletIds.length || !profileComplete) && (
               <section className="setup-card">
-                <div className="setup-copy"><span className="mini-label">Set up CardSmart</span><h2>Two things make recommendations yours</h2><p>No card numbers or bank login. Just tell us which cards you own and what matters to you.</p></div>
+                <div className="setup-copy"><span className="mini-label">Make it yours</span><h2>Two quick steps. Better answers every time.</h2><p>Add only card names and your broad preferences. No bank login or sensitive card details.</p></div>
                 <div className="setup-steps">
                   <button className={walletIds.length ? "done" : ""} onClick={openWalletPicker}>
                     <span>{walletIds.length ? <Icon name="check" size={16}/> : "1"}</span><div><strong>{walletIds.length ? `${walletIds.length} cards added` : "Add the cards you own"}</strong><small>{walletIds.length ? "Edit wallet" : "So we compare only your cards"}</small></div><Icon name="chevron" size={17}/>
@@ -1515,7 +1519,7 @@ export default function Home() {
 
             <section className="wallet-preview">
               <div className="section-heading">
-                <div><span className="mini-label">Ready for every checkout</span><h2>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"} in your smart wallet` : "Add your cards once. Ask anytime."}</h2></div>
+                <div><span className="mini-label">Your wallet</span><h2>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"}, ready to compare` : "Add your cards once. Ask anytime."}</h2></div>
                 {walletIds.length > 0 && <button className="text-button" onClick={openWalletPicker}>Manage cards <Icon name="chevron" size={16} /></button>}
               </div>
               <div className="wallet-strip">
@@ -1543,9 +1547,9 @@ export default function Home() {
             <button className="back-button" onClick={() => setView("home")}><Icon name="back" size={18} /> Check another payment</button>
             <div className="result-heading">
               <span className="transaction-pill"><span>{merchant}</span><strong>₹{numericAmount.toLocaleString("en-IN")}</strong></span>
-              <span className="eyebrow">{winner.eligible ? "Your smartest way to pay" : "No eligible reward found"}</span>
-              <h1>{winner.eligible ? <>Pay with <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards do not earn rewards here"}</h1>
-              <p>{winner.eligible ? "One clear choice, after checking every card in your wallet." : "This purchase is excluded across the cards currently in your wallet."}</p>
+              <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No reward on this payment"}</span>
+              <h1>{winner.eligible ? <>Use <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards won’t earn rewards here"}</h1>
+              <p>{winner.eligible ? `About ₹${winner.value.toLocaleString("en-IN")} back on this payment${runnerUp && winner.value > runnerUp.value ? `, ₹${(winner.value - runnerUp.value).toLocaleString("en-IN")} more than your next best card` : ""}.` : "This type of payment is excluded across the cards currently in your wallet."}</p>
             </div>
 
             <section className="winner-panel">
@@ -1554,10 +1558,9 @@ export default function Home() {
                 <CardVisual card={winner.card} />
               </div>
               <div className="reward-summary">
-                <span className={`rule-confidence rule-confidence--${winner.confidence}`}>{winner.confidence === "verified" ? "High confidence" : winner.confidence === "reviewed" ? "Medium confidence" : "Check issuer terms"}</span>
-                <span className="summary-label">You should earn</span>
+                <span className="summary-label">Expected reward</span>
                 <div className="reward-value">₹{winner.value.toLocaleString("en-IN")}</div>
-                <div className="reward-rate">{winner.eligible ? `${winner.rate}% estimated value on this payment` : winner.ruleLabel}</div>
+                <div className="reward-rate">{winner.eligible ? `${winner.rate}% back on this payment` : winner.ruleLabel}</div>
                 {runnerUp && (
                   <div className="extra-value"><Icon name="spark" size={16} />
                     {winner.value > runnerUp.value
@@ -1567,12 +1570,13 @@ export default function Home() {
                 )}
               </div>
               <details className="calculation-box">
-                <summary><span>Why this card?</span><Icon name="chevron" size={16}/></summary>
+                <summary><span>See why this wins</span><Icon name="chevron" size={16}/></summary>
                 <div className="calculation-content">
+                  <span className={`rule-confidence rule-confidence--${winner.confidence}`}>{confidenceLabel(winner.confidence)}</span>
                   {winner.eligible ? (
                     <>
                       <div className="reward-math"><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>×</span><strong>{winner.rate}%</strong><span>=</span><strong className="green-text">₹{winner.grossValue.toLocaleString("en-IN")}</strong></div>
-                      {winner.capAdjustment > 0 && <div className="cap-adjustment"><span>Known cap usage applied</span><strong>−₹{winner.capAdjustment.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>}
+                      {winner.capAdjustment > 0 && <div className="cap-adjustment"><span>Adjusted for rewards already earned</span><strong>−₹{winner.capAdjustment.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>}
                     </>
                   ) : <div className="excluded-calculation"><Icon name="info" size={18}/><strong>0% because this category is excluded</strong></div>}
                   <p>{winner.card.note}</p>
@@ -1583,7 +1587,7 @@ export default function Home() {
 
             <section className="comparison-section">
               <div className="section-heading">
-                <div><span className="mini-label">We checked them all</span><h2>Your wallet, ranked for this payment</h2></div>
+                <div><span className="mini-label">Your other options</span><h2>How the rest of your wallet compares</h2></div>
                 <button className="text-button" onClick={openWalletPicker}><Icon name="edit" size={16} /> Edit wallet</button>
               </div>
               <div className="comparison-table">
@@ -1600,7 +1604,7 @@ export default function Home() {
 
             <section className="result-actions">
               {confirmed ? (
-                <div className="confirmed-state"><span><Icon name="check" /></span><div><strong>Payment tracked</strong><p>We’ll use this to estimate your monthly reward-cap usage.</p></div></div>
+                <div className="confirmed-state"><span><Icon name="check" /></span><div><strong>Payment saved</strong><p>We’ll remember the reward so your next answer stays accurate.</p></div></div>
               ) : (
                 <button
                   className="primary-button"
@@ -1609,7 +1613,7 @@ export default function Home() {
                     ? void persistInteraction(authUser.id, "tracked", currentInteractionId)
                     : requireAccount("track_payment")}
                 >
-                  {interactionSaving ? "Saving…" : signedIn ? "I paid with this card" : "Save wallet & track this payment"} {!interactionSaving && <Icon name={signedIn ? "check" : "arrow"} />}
+                  {interactionSaving ? "Saving…" : signedIn ? "I used this card" : "Save this result"} {!interactionSaving && <Icon name={signedIn ? "check" : "arrow"} />}
                 </button>
               )}
               <button className="secondary-button" onClick={() => setView("home")}>Check another payment</button>
@@ -1622,7 +1626,7 @@ export default function Home() {
         {view === "wallet" && (
           <div className="wallet-page page-enter">
             <div className="wallet-page-heading">
-              <div><span className="eyebrow">My cards</span><h1>{walletIds.length ? "Know what each card is for." : "Start with the cards you own."}</h1><p>{walletIds.length ? "The useful view of your wallet: strengths, reward limits and readiness." : "Add your actual cards once. CardSmart will compare only what you can really use."}</p></div>
+              <div><span className="eyebrow">My cards</span><h1>{walletIds.length ? "Know what each card is best at." : "Start with the cards you own."}</h1><p>{walletIds.length ? "See where every card wins and whether you’re close to its monthly reward limit." : "Add your actual cards once. CardSmart will compare only what you can really use."}</p></div>
               {walletIds.length > 0 && <button className="primary-button add-card-button" onClick={openWalletPicker}><Icon name="plus" /> Add a card</button>}
             </div>
             {walletIds.length > 0 && !walletLoading && (
@@ -1664,7 +1668,7 @@ export default function Home() {
                       <div className="cap-track"><span style={{ width: `${card.capUsed}%` }} /></div>
                       <p>{card.cap}</p>
                     </div>
-                    <button className="card-detail-link" onClick={() => { setUsageCard(card); setUsageSource(walletRows[card.id]?.cap_usage_source === "tracked" ? "tracked" : "manual"); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update cap usage <Icon name="chevron" size={16} /></button>
+                    <button className="card-detail-link" onClick={() => { setUsageCard(card); setUsageSource(walletRows[card.id]?.cap_usage_source === "tracked" ? "tracked" : "manual"); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update rewards earned <Icon name="chevron" size={16} /></button>
                   </div>
                 </article>
                 ))}
@@ -1693,7 +1697,7 @@ export default function Home() {
                     <button className="primary-button full-button" disabled={profileComplete && !monthlyCardSpend} onClick={() => { if (!profileComplete) { openProfile(); return; } if (requireAccount("save_explore")) setExploreCalculated(true); }}>{!profileComplete ? "Complete profile to see my upgrade" : !monthlyCardSpend ? "Add monthly spend to continue" : "Calculate my best upgrade"} <Icon name="arrow" /></button>
                   </div>
                   {exploreCalculated && upgradeResult ? (
-                    <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Calculated result</div><span className="mini-label">Potential wallet upgrade</span><h2>{upgradeResult.card.bank} {upgradeResult.card.name}</h2><span className={`rule-confidence rule-confidence--${upgradeResult.card.rewardModel.confidence}`}>{confidenceLabel(upgradeResult.card.rewardModel.confidence)}</span><div className="annual-value"><strong>+₹{upgradeResult.annualValue.toLocaleString("en-IN")}</strong><span>estimated extra value / year<br/>before annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>It creates the largest estimated improvement on your {upgradeResult.reasonCategory} spend versus the cards already in your wallet.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>Caps, exclusions and known usage are applied where structured rules exist. Indicative cards remain in the catalogue but are labelled.</span></div></aside>
+                    <aside className="upgrade-preview"><div className="preview-badge"><Icon name="spark" size={14}/> Your best upgrade</div><span className="mini-label">A card worth considering</span><h2>{upgradeResult.card.bank} {upgradeResult.card.name}</h2><span className={`rule-confidence rule-confidence--${upgradeResult.card.rewardModel.confidence}`}>{confidenceLabel(upgradeResult.card.rewardModel.confidence)}</span><div className="annual-value"><strong>+₹{upgradeResult.annualValue.toLocaleString("en-IN")}</strong><span>estimated extra value / year<br/>before annual fee</span></div><div className="value-reason"><span>Why it helps</span><p>It creates the biggest estimated improvement on your {upgradeResult.reasonCategory} spend versus the cards you already own.</p></div><div className="assumption-line"><Icon name="info" size={15}/><span>We apply reward limits and excluded spends wherever the card’s current terms are available. Always check the issuer’s latest terms before applying.</span></div></aside>
                   ) : (
                     <aside className="upgrade-preview upgrade-preview--locked"><div className="locked-icon"><Icon name={profileComplete ? "spark" : "user"} size={22}/></div><span className="mini-label">{profileComplete ? "Ready when you are" : "Personalisation needed"}</span><h2>No made-up recommendation here.</h2><p>{profileComplete ? "Enter your typical monthly spend and calculate. We’ll compare every eligible new card against your actual wallet." : "Complete your profile and monthly spend first. Then CardSmart can explain exactly where a new card improves your current wallet."}</p>{!profileComplete && <button className="secondary-button" onClick={openProfile}>Complete my profile <Icon name="arrow" size={16}/></button>}</aside>
                   )}
@@ -1829,7 +1833,7 @@ export default function Home() {
                 return (
                   <button className={`catalog-card ${selected ? "selected" : ""}`} key={card.id} onClick={() => toggleDraftCard(card.id)}>
                     <span className="catalog-swatch" style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, color: card.accent }}><span>{card.bank.slice(0, 1)}</span></span>
-                    <span className="catalog-name"><small>{card.bank}</small><strong>{card.name}</strong><em>{card.network}</em><i className={`catalog-confidence catalog-confidence--${card.rewardModel.confidence}`}>{card.rewardModel.confidence === "verified" ? "Verified" : card.rewardModel.confidence === "reviewed" ? "Reviewed" : "Indicative"}</i></span>
+                    <span className="catalog-name"><small>{card.bank}</small><strong>{card.name}</strong><em>{card.network}</em><i className={`catalog-confidence catalog-confidence--${card.rewardModel.confidence}`}>{confidenceLabel(card.rewardModel.confidence)}</i></span>
                     <span className="selection-box">{selected && <Icon name="check" size={16} />}</span>
                   </button>
                 );
