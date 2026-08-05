@@ -36,7 +36,19 @@ type CatalogueCardInput = {
 
 type ActivityItem = {
   id: string; merchant: string; amount: number; date: string; cardId: string;
-  reward: number; incremental: number; status: "tracked" | "checked";
+  bestCard: string; reward: number; incremental: number; status: "tracked" | "checked";
+};
+
+type InteractionRow = {
+  id: string;
+  query: string | null;
+  amount: number | string | null;
+  best_card: string | null;
+  best_card_id: string | null;
+  estimated_reward: number | string | null;
+  incremental_reward: number | string | null;
+  status: "tracked" | "checked" | null;
+  created_at: string;
 };
 
 type RecommendationProfile = {
@@ -377,6 +389,7 @@ const EMPTY_SPEND_PROFILE: SpendProfile = {
 };
 
 const PROFILE_COLUMNS = "name, mobile_number, city, income_range, work_status, primary_card_goal, annual_fee_comfort, age_range, credit_score_range, monthly_spends";
+const INTERACTION_COLUMNS = "id, query, amount, best_card, best_card_id, estimated_reward, incremental_reward, status, created_at";
 
 function mobileDigits(value: string) {
   const digits = value.replace(/\D/g, "");
@@ -413,6 +426,20 @@ function profileFromDatabase(row: ProfileRow | null, fallbackName: string, fallb
     creditScoreBand: row?.credit_score_range ?? "",
     primaryGoal: row?.primary_card_goal ?? "",
     feeComfort: row?.annual_fee_comfort ?? "",
+  };
+}
+
+function activityFromDatabase(row: InteractionRow): ActivityItem {
+  return {
+    id: row.id,
+    merchant: row.query || "Card recommendation",
+    amount: Number(row.amount) || 0,
+    date: new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(row.created_at)),
+    cardId: row.best_card_id || "",
+    bestCard: row.best_card || "Recommended card",
+    reward: Number(row.estimated_reward) || 0,
+    incremental: Number(row.incremental_reward) || 0,
+    status: row.status === "tracked" ? "tracked" : "checked",
   };
 }
 
@@ -506,6 +533,12 @@ export default function Home() {
   const [profileError, setProfileError] = useState("");
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
+  const [activityFilter, setActivityFilter] = useState<"all" | "tracked" | "checked">("all");
+  const [interactionSaving, setInteractionSaving] = useState(false);
+  const [currentInteractionId, setCurrentInteractionId] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const signedIn = Boolean(authUser);
   const [authOpen, setAuthOpen] = useState(false);
@@ -515,8 +548,6 @@ export default function Home() {
   const [authForm, setAuthForm] = useState({ name: "", mobile: "", email: "", password: "" });
   const [authError, setAuthError] = useState("");
   const [pendingAction, setPendingAction] = useState<"save_wallet" | "track_payment" | "activity" | "cap_usage" | "save_explore" | "save_profile" | null>(null);
-  const activity: ActivityItem[] = [];
-
   const walletCards = useMemo(() => CATALOG.filter((card) => walletIds.includes(card.id)), [walletIds]);
   const requiredProfileValues = [profile.name, normalizedIndianMobile(profile.mobile), profile.city, profile.employment, profile.incomeBand, profile.primaryGoal, profile.feeComfort];
   const completedProfileFields = requiredProfileValues.filter(Boolean).length;
@@ -525,6 +556,7 @@ export default function Home() {
   const monthlyCardSpend = Object.values(spendProfile).reduce((total, value) => total + (Number(value) || 0), 0);
   const activityRewardTotal = activity.reduce((total, item) => total + (item.status === "tracked" ? item.reward : 0), 0);
   const trackedActivityCount = activity.filter((item) => item.status === "tracked").length;
+  const visibleActivity = activityFilter === "all" ? activity : activity.filter((item) => item.status === activityFilter);
   const upgradeResult = useMemo(() => {
     if (!walletCards.length || !monthlyCardSpend) return null;
     const spendEntries = Object.entries(spendProfile) as [keyof SpendProfile, string][];
@@ -564,6 +596,62 @@ export default function Home() {
     return matchSearch && matchBank;
   });
 
+  const persistInteraction = useCallback(async (
+    userId: string,
+    status: "checked" | "tracked",
+    interactionId?: string | null,
+  ) => {
+    if (!winner) return false;
+    const id = interactionId || crypto.randomUUID();
+    const incrementalReward = Math.max(0, winner.value - (runnerUp?.value ?? 0));
+    setInteractionSaving(true);
+    setActivityError("");
+
+    const { data, error } = await supabase
+      .from("interactions")
+      .upsert({
+        id,
+        user_id: userId,
+        query: merchant.trim(),
+        category: winner.category,
+        amount: numericAmount,
+        best_card: `${winner.card.bank} ${winner.card.name}`,
+        best_card_id: winner.card.id,
+        benefit: `₹${winner.value.toLocaleString("en-IN")} expected reward`,
+        estimated_saving: `₹${numericAmount.toLocaleString("en-IN")} × ${winner.rate}% = ₹${winner.value.toLocaleString("en-IN")}`,
+        estimated_reward: winner.value,
+        incremental_reward: incrementalReward,
+        reason: `${winner.card.bank} ${winner.card.name} gives the highest estimated return for this payment among the cards in your wallet.`,
+        full_response: {
+          merchant: merchant.trim(),
+          amount: numericAmount,
+          category: winner.category,
+          recommended_card: winner.card.id,
+          estimated_rate: winner.rate,
+          estimated_reward: winner.value,
+          incremental_reward: incrementalReward,
+        },
+        status,
+        tracked_at: status === "tracked" ? new Date().toISOString() : null,
+      }, { onConflict: "id" })
+      .select(INTERACTION_COLUMNS)
+      .single();
+
+    setInteractionSaving(false);
+    if (error || !data) {
+      setActivityError(status === "tracked"
+        ? "Payment could not be tracked. Please try again."
+        : "This recommendation could not be added to your activity.");
+      return false;
+    }
+
+    const savedActivity = activityFromDatabase(data as InteractionRow);
+    setActivity((current) => [savedActivity, ...current.filter((item) => item.id !== savedActivity.id)]);
+    setCurrentInteractionId(savedActivity.id);
+    if (status === "tracked") setConfirmed(true);
+    return true;
+  }, [merchant, numericAmount, runnerUp, winner]);
+
   const submitPayment = (event?: React.FormEvent) => {
     event?.preventDefault();
     if (!merchant.trim()) {
@@ -580,8 +668,11 @@ export default function Home() {
       return;
     }
     setFormError("");
+    setActivityError("");
     setConfirmed(false);
+    setCurrentInteractionId(null);
     setView("result");
+    if (authUser) void persistInteraction(authUser.id, "checked");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -608,11 +699,14 @@ export default function Home() {
     } catch { window.localStorage.removeItem("cardsmart-guest-session"); }
   }, []);
 
-  const completeAccountAction = useCallback((action = pendingAction) => {
+  const completeAccountAction = useCallback((action = pendingAction, signedInUserId?: string) => {
     setAuthBusy(false);
     setAuthOpen(false);
     if (action === "save_wallet") setAuthNotice("You’re signed in. Wallet sync across devices is the next setup step.");
-    else if (action === "track_payment") setAuthNotice("Payment tracked in your activity.");
+    else if (action === "track_payment") {
+      const userId = signedInUserId || authUser?.id;
+      if (userId) void persistInteraction(userId, "tracked", currentInteractionId);
+    }
     else if (action === "save_profile") setAuthNotice("Profile saved. Recommendations can now use these details.");
     else if (action === "save_explore") {
       setAuthNotice("Your wallet upgrade has been calculated.");
@@ -620,7 +714,6 @@ export default function Home() {
       setView("explore");
     }
     else if (!action) setAuthNotice("You’re logged in.");
-    if (action === "track_payment") setConfirmed(true);
     if (action === "activity") setView("activity");
     if (action === "cap_usage" && usageCard) setManualUsage(String(usageCard.trackedValue || ""));
     if (action === "save_profile") {
@@ -630,7 +723,7 @@ export default function Home() {
     setPendingAction(null);
     window.localStorage.removeItem("cardsmart-pending-action");
     window.localStorage.removeItem("cardsmart-guest-session");
-  }, [pendingAction, usageCard]);
+  }, [authUser?.id, currentInteractionId, pendingAction, persistInteraction, usageCard]);
 
   useEffect(() => {
     let mounted = true;
@@ -645,7 +738,7 @@ export default function Home() {
         if (savedAction) {
           setPendingAction(savedAction);
           window.localStorage.removeItem("cardsmart-pending-action");
-          window.setTimeout(() => completeAccountAction(savedAction), 0);
+          window.setTimeout(() => completeAccountAction(savedAction, session.user.id), 0);
         }
       }
     });
@@ -689,6 +782,36 @@ export default function Home() {
     };
 
     void loadProfile();
+    return () => { active = false; };
+  }, [authUser]);
+
+  useEffect(() => {
+    let active = true;
+    if (!authUser) {
+      setActivity([]);
+      return;
+    }
+
+    const loadActivity = async () => {
+      setActivityLoading(true);
+      setActivityError("");
+      const { data, error } = await supabase
+        .from("interactions")
+        .select(INTERACTION_COLUMNS)
+        .eq("user_id", authUser.id)
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      if (!active) return;
+      setActivityLoading(false);
+      if (error) {
+        setActivityError("We couldn’t load your saved activity. Please refresh and try again.");
+        return;
+      }
+      setActivity(((data ?? []) as InteractionRow[]).map(activityFromDatabase));
+    };
+
+    void loadActivity();
     return () => { active = false; };
   }, [authUser]);
 
@@ -750,6 +873,9 @@ export default function Home() {
     setProfileSaved(false);
     setExploreCalculated(false);
     setConfirmed(false);
+    setActivity([]);
+    setActivityError("");
+    setCurrentInteractionId(null);
     setView("home");
     setAuthNotice("You’re logged out.");
     window.localStorage.removeItem("cardsmart-guest-session");
@@ -995,10 +1121,19 @@ export default function Home() {
               {confirmed ? (
                 <div className="confirmed-state"><span><Icon name="check" /></span><div><strong>Payment tracked</strong><p>We’ll use this to estimate your monthly reward-cap usage.</p></div></div>
               ) : (
-                <button className="primary-button" onClick={() => signedIn ? setConfirmed(true) : requireAccount("track_payment")}>{signedIn ? "I paid with this card" : "Save wallet & track this payment"} <Icon name={signedIn ? "check" : "arrow"} /></button>
+                <button
+                  className="primary-button"
+                  disabled={interactionSaving}
+                  onClick={() => authUser
+                    ? void persistInteraction(authUser.id, "tracked", currentInteractionId)
+                    : requireAccount("track_payment")}
+                >
+                  {interactionSaving ? "Saving…" : signedIn ? "I paid with this card" : "Save wallet & track this payment"} {!interactionSaving && <Icon name={signedIn ? "check" : "arrow"} />}
+                </button>
               )}
               <button className="secondary-button" onClick={() => setView("home")}>Check another payment</button>
             </section>
+            {activityError && <p className="profile-form-error"><Icon name="info" size={15}/>{activityError}</p>}
             <p className="estimate-note"><Icon name="info" size={15} /> Estimates use prototype reward rules and tracked activity. Final eligibility, exclusions and rewards are decided by the issuer.</p>
           </div>
         )}
@@ -1151,9 +1286,13 @@ export default function Home() {
         {view === "activity" && (
           <div className="product-page page-enter">
             <div className="product-heading activity-heading"><div><span className="eyebrow"><Icon name="clock" size={15} /> Your decisions</span><h1>Activity</h1><p>Past recommendations and payments you chose to track.</p></div>{activity.length > 0 && <div className="reward-total"><span>Tracked expected rewards</span><strong>₹{activityRewardTotal.toLocaleString("en-IN")}</strong><small>across {trackedActivityCount} confirmed {trackedActivityCount === 1 ? "payment" : "payments"}</small></div>}</div>
-            {activity.length ? (
-              <><div className="activity-toolbar"><div className="activity-tabs"><button className="active">All</button><button>Tracked payments</button><button>Only checked</button></div><button className="secondary-button compact-button"><Icon name="tune" size={15}/> Filter</button></div>
-              <section className="activity-list">{activity.map((item) => { const card = CATALOG.find((c) => c.id === item.cardId)!; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {shortBankName(card.bank)} {card.name}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward}</strong><small>₹{item.incremental} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => { setMerchant(item.merchant); setAmount(String(item.amount)); setView("home"); }} aria-label={`Repeat ${item.merchant} calculation`}><Icon name="chevron"/></button></article>; })}</section>
+            {activityLoading ? (
+              <div className="profile-loading"><span className="profile-loading-dot"/>Loading your saved activity…</div>
+            ) : activityError && !activity.length ? (
+              <section className="activity-empty-state"><div className="empty-state-icon"><Icon name="info" size={28}/></div><span className="mini-label">Couldn’t load activity</span><h2>Your saved history is still protected.</h2><p>{activityError}</p><button className="primary-button" onClick={() => window.location.reload()}>Try again <Icon name="arrow"/></button></section>
+            ) : activity.length ? (
+              <><div className="activity-toolbar"><div className="activity-tabs"><button className={activityFilter === "all" ? "active" : ""} onClick={() => setActivityFilter("all")}>All</button><button className={activityFilter === "tracked" ? "active" : ""} onClick={() => setActivityFilter("tracked")}>Tracked payments</button><button className={activityFilter === "checked" ? "active" : ""} onClick={() => setActivityFilter("checked")}>Only checked</button></div></div>
+              {visibleActivity.length ? <section className="activity-list">{visibleActivity.map((item) => { const card = CATALOG.find((c) => c.id === item.cardId); const cardLabel = card ? `${shortBankName(card.bank)} ${card.name}` : item.bestCard; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {cardLabel}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward.toLocaleString("en-IN")}</strong><small>₹{item.incremental.toLocaleString("en-IN")} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => { setMerchant(item.merchant); setAmount(String(item.amount)); setView("home"); }} aria-label={`Repeat ${item.merchant} calculation`}><Icon name="chevron"/></button></article>; })}</section> : <section className="activity-empty-state"><span className="mini-label">No matching activity</span><h2>Nothing in this view yet.</h2><p>Try another activity filter or check a new payment.</p></section>}
               <p className="estimate-note"><Icon name="info" size={15}/> “Expected rewards” are estimates. CardSmart does not have access to your bank statement in this prototype.</p></>
             ) : (
               <section className="activity-empty-state"><div className="empty-state-icon"><Icon name="clock" size={28}/></div><span className="mini-label">Nothing tracked yet</span><h2>Your activity will build from your real decisions.</h2><p>Check a payment, choose a recommended card and confirm what you used. We won’t show sample transactions as if they were yours.</p><button className="primary-button" onClick={() => setView("home")}>Check my first payment <Icon name="arrow"/></button></section>
