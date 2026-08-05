@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
@@ -48,6 +48,16 @@ type InteractionRow = {
   estimated_reward: number | string | null;
   incremental_reward: number | string | null;
   status: "tracked" | "checked" | null;
+  created_at: string;
+};
+
+type WalletRow = {
+  id: string;
+  user_id: string;
+  card_id: string;
+  cap_usage_value: number | string | null;
+  cap_usage_source: "manual" | "tracked" | null;
+  cap_usage_updated_at: string | null;
   created_at: string;
 };
 
@@ -390,6 +400,7 @@ const EMPTY_SPEND_PROFILE: SpendProfile = {
 
 const PROFILE_COLUMNS = "name, mobile_number, city, income_range, work_status, primary_card_goal, annual_fee_comfort, age_range, credit_score_range, monthly_spends";
 const INTERACTION_COLUMNS = "id, query, amount, best_card, best_card_id, estimated_reward, incremental_reward, status, created_at";
+const WALLET_COLUMNS = "id, user_id, card_id, cap_usage_value, cap_usage_source, cap_usage_updated_at, created_at";
 
 function mobileDigits(value: string) {
   const digits = value.replace(/\D/g, "");
@@ -441,6 +452,16 @@ function activityFromDatabase(row: InteractionRow): ActivityItem {
     incremental: Number(row.incremental_reward) || 0,
     status: row.status === "tracked" ? "tracked" : "checked",
   };
+}
+
+function uniqueKnownCardIds(ids: string[]) {
+  const knownIds = new Set(CATALOG.map((card) => card.id));
+  return Array.from(new Set(ids.filter((id) => knownIds.has(id))));
+}
+
+function capAmountFromRule(rule: string) {
+  const match = rule.match(/₹\s*([\d,]+)/);
+  return match ? Number(match[1].replace(/,/g, "")) || 0 : 0;
 }
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -517,6 +538,11 @@ export default function Home() {
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
+  const [walletDraftIds, setWalletDraftIds] = useState(DEFAULT_WALLET);
+  const [walletRows, setWalletRows] = useState<Record<string, WalletRow>>({});
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletSaving, setWalletSaving] = useState(false);
+  const [walletError, setWalletError] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [bankFilter, setBankFilter] = useState("All");
@@ -525,6 +551,7 @@ export default function Home() {
   const [confirmed, setConfirmed] = useState(false);
   const [usageCard, setUsageCard] = useState<CardData | null>(null);
   const [manualUsage, setManualUsage] = useState("");
+  const [usageSource, setUsageSource] = useState<"manual" | "tracked">("manual");
   const [exploreMode, setExploreMode] = useState<"discover" | "compare">("discover");
   const [exploreCalculated, setExploreCalculated] = useState(false);
   const [spendProfile, setSpendProfile] = useState<SpendProfile>(EMPTY_SPEND_PROFILE);
@@ -548,7 +575,20 @@ export default function Home() {
   const [authForm, setAuthForm] = useState({ name: "", mobile: "", email: "", password: "" });
   const [authError, setAuthError] = useState("");
   const [pendingAction, setPendingAction] = useState<"save_wallet" | "track_payment" | "activity" | "cap_usage" | "save_explore" | "save_profile" | null>(null);
-  const walletCards = useMemo(() => CATALOG.filter((card) => walletIds.includes(card.id)), [walletIds]);
+  const walletIdsRef = useRef(walletIds);
+  const walletAuthSyncRef = useRef(false);
+  const authSubmitInProgressRef = useRef(false);
+  const walletCards = useMemo(() => CATALOG
+    .filter((card) => walletIds.includes(card.id))
+    .map((card) => {
+      const trackedValue = Number(walletRows[card.id]?.cap_usage_value) || 0;
+      const capAmount = capAmountFromRule(card.cap);
+      return {
+        ...card,
+        trackedValue,
+        capUsed: capAmount ? Math.min(100, Math.round((trackedValue / capAmount) * 100)) : 0,
+      };
+    }), [walletIds, walletRows]);
   const requiredProfileValues = [profile.name, normalizedIndianMobile(profile.mobile), profile.city, profile.employment, profile.incomeBand, profile.primaryGoal, profile.feeComfort];
   const completedProfileFields = requiredProfileValues.filter(Boolean).length;
   const profileCompletion = Math.round((completedProfileFields / requiredProfileValues.length) * 100);
@@ -556,6 +596,7 @@ export default function Home() {
   const monthlyCardSpend = Object.values(spendProfile).reduce((total, value) => total + (Number(value) || 0), 0);
   const activityRewardTotal = activity.reduce((total, item) => total + (item.status === "tracked" ? item.reward : 0), 0);
   const trackedActivityCount = activity.filter((item) => item.status === "tracked").length;
+  const trackedUsageTotal = usageCard ? activity.reduce((total, item) => total + (item.status === "tracked" && item.cardId === usageCard.id ? item.reward : 0), 0) : 0;
   const visibleActivity = activityFilter === "all" ? activity : activity.filter((item) => item.status === activityFilter);
   const upgradeResult = useMemo(() => {
     if (!walletCards.length || !monthlyCardSpend) return null;
@@ -664,7 +705,7 @@ export default function Home() {
     }
     if (!walletIds.length) {
       setFormError("");
-      setPickerOpen(true);
+      openWalletPicker();
       return;
     }
     setFormError("");
@@ -682,8 +723,163 @@ export default function Home() {
     setFormError("");
   };
 
-  const toggleCard = (id: string) => {
-    setWalletIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  useEffect(() => {
+    walletIdsRef.current = walletIds;
+  }, [walletIds]);
+
+  const applyWalletRows = useCallback((rows: WalletRow[]) => {
+    const nextRows: Record<string, WalletRow> = {};
+    rows.forEach((row) => {
+      if (CATALOG.some((card) => card.id === row.card_id) && !nextRows[row.card_id]) nextRows[row.card_id] = row;
+    });
+    const nextIds = Object.keys(nextRows);
+    walletIdsRef.current = nextIds;
+    setWalletRows(nextRows);
+    setWalletIds(nextIds);
+    setWalletDraftIds(nextIds);
+  }, []);
+
+  const loadWallet = useCallback(async (userId: string) => {
+    setWalletLoading(true);
+    setWalletError("");
+    const { data, error } = await supabase
+      .from("cards")
+      .select(WALLET_COLUMNS)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+    setWalletLoading(false);
+    if (error) {
+      setWalletError("We couldn’t load your wallet. Please refresh and try again.");
+      return false;
+    }
+    applyWalletRows((data ?? []) as WalletRow[]);
+    return true;
+  }, [applyWalletRows]);
+
+  const persistWallet = useCallback(async (userId: string, requestedIds: string[]) => {
+    const nextIds = uniqueKnownCardIds(requestedIds);
+    setWalletSaving(true);
+    setWalletError("");
+
+    const { data: existingData, error: loadError } = await supabase
+      .from("cards")
+      .select(WALLET_COLUMNS)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+
+    if (loadError) {
+      setWalletSaving(false);
+      setWalletError("Your wallet couldn’t be saved. Please try again.");
+      return false;
+    }
+
+    const existingRows = (existingData ?? []) as WalletRow[];
+    const existingKnownIds = uniqueKnownCardIds(existingRows.map((row) => row.card_id));
+    const idsToAdd = nextIds.filter((id) => !existingKnownIds.includes(id));
+    const idsToRemove = existingKnownIds.filter((id) => !nextIds.includes(id));
+
+    if (idsToAdd.length) {
+      const inserts = idsToAdd.map((id) => {
+        const card = CATALOG.find((item) => item.id === id)!;
+        return {
+          user_id: userId,
+          card_id: card.id,
+          bank: card.bank,
+          name: card.name,
+          rate: `${card.baseRate}% base reward`,
+          benefits: card.bestFor,
+          details: card,
+          is_preset: true,
+          icon: "💳",
+        };
+      });
+      const { error } = await supabase.from("cards").insert(inserts);
+      if (error) {
+        setWalletSaving(false);
+        setWalletError("Your wallet couldn’t be saved. Please try again.");
+        return false;
+      }
+    }
+
+    if (idsToRemove.length) {
+      const { error } = await supabase
+        .from("cards")
+        .delete()
+        .eq("user_id", userId)
+        .in("card_id", idsToRemove);
+      if (error) {
+        setWalletSaving(false);
+        setWalletError("Some wallet changes didn’t save. We reloaded the latest version.");
+        await loadWallet(userId);
+        return false;
+      }
+    }
+
+    const loaded = await loadWallet(userId);
+    setWalletSaving(false);
+    return loaded;
+  }, [loadWallet]);
+
+  const openWalletPicker = () => {
+    setWalletDraftIds(walletIds);
+    setWalletError("");
+    setPickerOpen(true);
+  };
+
+  const toggleDraftCard = (id: string) => {
+    setWalletDraftIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  };
+
+  const saveWalletDraft = async () => {
+    const nextIds = uniqueKnownCardIds(walletDraftIds);
+    if (!authUser) {
+      walletIdsRef.current = nextIds;
+      setWalletIds(nextIds);
+      setPickerOpen(false);
+      requireAccount("save_wallet");
+      return;
+    }
+    const saved = await persistWallet(authUser.id, nextIds);
+    if (saved) {
+      setPickerOpen(false);
+      setAuthNotice(nextIds.length ? "Wallet saved. Your cards now stay in sync." : "Wallet cleared.");
+    }
+  };
+
+  const removeWalletCard = async (id: string) => {
+    const nextIds = walletIds.filter((cardId) => cardId !== id);
+    if (!authUser) {
+      walletIdsRef.current = nextIds;
+      setWalletIds(nextIds);
+      setWalletDraftIds(nextIds);
+      return;
+    }
+    const saved = await persistWallet(authUser.id, nextIds);
+    if (saved) setAuthNotice("Card removed from your wallet.");
+  };
+
+  const saveCapUsage = async (value: number | null) => {
+    if (!usageCard || !authUser) return;
+    setWalletSaving(true);
+    setWalletError("");
+    const { error } = await supabase
+      .from("cards")
+      .update({
+        cap_usage_value: value,
+        cap_usage_source: value === null ? null : usageSource,
+        cap_usage_updated_at: value === null ? null : new Date().toISOString(),
+      })
+      .eq("user_id", authUser.id)
+      .eq("card_id", usageCard.id);
+    if (error) {
+      setWalletSaving(false);
+      setWalletError("Cap usage couldn’t be saved. Please try again.");
+      return;
+    }
+    await loadWallet(authUser.id);
+    setWalletSaving(false);
+    setUsageCard(null);
+    setAuthNotice(value === null ? "Cap usage cleared." : "Cap usage saved.");
   };
 
   useEffect(() => {
@@ -693,16 +889,29 @@ export default function Home() {
       const guest = JSON.parse(saved) as { walletIds?: string[]; merchant?: string; amount?: string };
       // Restoring a browser session is intentionally a one-time external-state sync.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (guest.walletIds?.length) setWalletIds(guest.walletIds);
+      if (guest.walletIds?.length) {
+        const restoredIds = uniqueKnownCardIds(guest.walletIds);
+        walletIdsRef.current = restoredIds;
+        setWalletIds(restoredIds);
+        setWalletDraftIds(restoredIds);
+      }
       if (guest.merchant) setMerchant(guest.merchant);
       if (guest.amount) setAmount(guest.amount);
     } catch { window.localStorage.removeItem("cardsmart-guest-session"); }
   }, []);
 
-  const completeAccountAction = useCallback((action = pendingAction, signedInUserId?: string) => {
+  const completeAccountAction = useCallback(async (action = pendingAction, signedInUserId?: string) => {
     setAuthBusy(false);
     setAuthOpen(false);
-    if (action === "save_wallet") setAuthNotice("You’re signed in. Wallet sync across devices is the next setup step.");
+    let walletSaved = true;
+    if (action === "save_wallet") {
+      const userId = signedInUserId || authUser?.id;
+      walletAuthSyncRef.current = true;
+      const saved = userId ? await persistWallet(userId, walletIdsRef.current) : false;
+      walletAuthSyncRef.current = false;
+      walletSaved = saved;
+      if (saved) setAuthNotice("Wallet saved. Your cards now stay in sync.");
+    }
     else if (action === "track_payment") {
       const userId = signedInUserId || authUser?.id;
       if (userId) void persistInteraction(userId, "tracked", currentInteractionId);
@@ -722,8 +931,8 @@ export default function Home() {
     }
     setPendingAction(null);
     window.localStorage.removeItem("cardsmart-pending-action");
-    window.localStorage.removeItem("cardsmart-guest-session");
-  }, [authUser?.id, currentInteractionId, pendingAction, persistInteraction, usageCard]);
+    if (walletSaved) window.localStorage.removeItem("cardsmart-guest-session");
+  }, [authUser?.id, currentInteractionId, pendingAction, persistInteraction, persistWallet, usageCard]);
 
   useEffect(() => {
     let mounted = true;
@@ -735,10 +944,11 @@ export default function Home() {
       setAuthUser(session?.user ?? null);
       if (session?.user && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
         const savedAction = window.localStorage.getItem("cardsmart-pending-action") as typeof pendingAction;
-        if (savedAction) {
+        if (savedAction === "save_wallet") walletAuthSyncRef.current = true;
+        if (savedAction && !authSubmitInProgressRef.current) {
           setPendingAction(savedAction);
           window.localStorage.removeItem("cardsmart-pending-action");
-          window.setTimeout(() => completeAccountAction(savedAction, session.user.id), 0);
+          window.setTimeout(() => void completeAccountAction(savedAction, session.user.id), 0);
         }
       }
     });
@@ -752,6 +962,16 @@ export default function Home() {
     if (signedIn) return;
     window.localStorage.setItem("cardsmart-guest-session", JSON.stringify({ walletIds, merchant, amount, returnView: view }));
   }, [walletIds, merchant, amount, view, signedIn]);
+
+  useEffect(() => {
+    if (!authUser) {
+      setWalletRows({});
+      setWalletLoading(false);
+      return;
+    }
+    if (walletAuthSyncRef.current) return;
+    void loadWallet(authUser.id);
+  }, [authUser, loadWallet]);
 
   useEffect(() => {
     let active = true;
@@ -841,6 +1061,7 @@ export default function Home() {
       return setAuthError("Account service is not configured yet.");
     }
     if (authMode === "signup") {
+      authSubmitInProgressRef.current = true;
       const { data, error } = await supabase.auth.signUp({
         email: authForm.email.trim().toLowerCase(),
         password: authForm.password,
@@ -849,25 +1070,34 @@ export default function Home() {
           emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
         },
       });
+      authSubmitInProgressRef.current = false;
       setAuthBusy(false);
       if (error) return setAuthError(error.message);
-      if (data.session) completeAccountAction();
+      if (data.session) void completeAccountAction(pendingAction, data.user?.id);
       else setAuthMode("verify");
       return;
     }
-    const { error } = await supabase.auth.signInWithPassword({
+    authSubmitInProgressRef.current = true;
+    const { data, error } = await supabase.auth.signInWithPassword({
       email: authForm.email.trim().toLowerCase(),
       password: authForm.password,
     });
+    authSubmitInProgressRef.current = false;
     setAuthBusy(false);
     if (error) return setAuthError(error.message);
-    completeAccountAction();
+    void completeAccountAction(pendingAction, data.user?.id);
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
     setAuthUser(null);
+    walletIdsRef.current = [];
     setWalletIds([]);
+    setWalletDraftIds([]);
+    setWalletRows({});
+    setWalletError("");
+    setWalletLoading(false);
+    setWalletSaving(false);
     setProfile(EMPTY_PROFILE);
     setSpendProfile(EMPTY_SPEND_PROFILE);
     setProfileSaved(false);
@@ -1032,7 +1262,7 @@ export default function Home() {
               <section className="setup-card">
                 <div className="setup-copy"><span className="mini-label">Set up CardSmart</span><h2>Two things make recommendations yours</h2><p>No card numbers or bank login. Just tell us which cards you own and what matters to you.</p></div>
                 <div className="setup-steps">
-                  <button className={walletIds.length ? "done" : ""} onClick={() => setPickerOpen(true)}>
+                  <button className={walletIds.length ? "done" : ""} onClick={openWalletPicker}>
                     <span>{walletIds.length ? <Icon name="check" size={16}/> : "1"}</span><div><strong>{walletIds.length ? `${walletIds.length} cards added` : "Add the cards you own"}</strong><small>{walletIds.length ? "Edit wallet" : "So we compare only your cards"}</small></div><Icon name="chevron" size={17}/>
                   </button>
                   <button className={profileComplete ? "done" : ""} onClick={() => setView("profile")}>
@@ -1045,7 +1275,7 @@ export default function Home() {
             <section className="wallet-preview">
               <div className="section-heading">
                 <div><span className="mini-label">Your wallet</span><h2>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"} ready to compare` : "No cards added yet"}</h2></div>
-                {walletIds.length > 0 && <button className="text-button" onClick={() => setPickerOpen(true)}><Icon name="edit" size={16} /> Edit wallet</button>}
+                {walletIds.length > 0 && <button className="text-button" onClick={openWalletPicker}><Icon name="edit" size={16} /> Edit wallet</button>}
               </div>
               <div className="wallet-strip">
                 {walletCards.map((card, index) => (
@@ -1057,7 +1287,7 @@ export default function Home() {
                   <div className="empty-wallet-card">
                     <span><Icon name="wallet" size={22}/></span>
                     <div><strong>Your wallet starts empty</strong><p>Add only the cards you actually own. We never need the card number.</p></div>
-                    <button className="secondary-button" onClick={() => setPickerOpen(true)}><Icon name="plus" size={16}/> Add my cards</button>
+                    <button className="secondary-button" onClick={openWalletPicker}><Icon name="plus" size={16}/> Add my cards</button>
                   </div>
                 )}
               </div>
@@ -1103,7 +1333,7 @@ export default function Home() {
             <section className="comparison-section">
               <div className="section-heading">
                 <div><span className="mini-label">Wallet comparison</span><h2>How your other cards compare</h2></div>
-                <button className="text-button" onClick={() => setPickerOpen(true)}><Icon name="edit" size={16} /> Edit wallet</button>
+                <button className="text-button" onClick={openWalletPicker}><Icon name="edit" size={16} /> Edit wallet</button>
               </div>
               <div className="comparison-table">
                 {ranked.map((item, index) => (
@@ -1142,15 +1372,18 @@ export default function Home() {
           <div className="wallet-page page-enter">
             <div className="wallet-page-heading">
               <div><span className="eyebrow">My wallet</span><h1>{walletIds.length ? "Your cards, made useful." : "Start with the cards you own."}</h1><p>{walletIds.length ? "See what each card is best for and keep reward caps in view." : "CardSmart starts empty. Add your actual cards so every comparison is personal and honest."}</p></div>
-              {walletIds.length > 0 && <button className="primary-button add-card-button" onClick={() => setPickerOpen(true)}><Icon name="plus" /> Add a card</button>}
+              {walletIds.length > 0 && <button className="primary-button add-card-button" onClick={openWalletPicker}><Icon name="plus" /> Add a card</button>}
             </div>
-            {!walletIds.length ? (
+            {walletError && <div className="wallet-error"><Icon name="info" size={17}/><span>{walletError}</span></div>}
+            {walletLoading ? (
+              <div className="profile-loading"><span className="profile-loading-dot"/>Loading your saved wallet…</div>
+            ) : !walletIds.length ? (
               <section className="wallet-empty-state">
                 <div className="empty-state-icon"><Icon name="wallet" size={28}/></div>
                 <span className="mini-label">No cards added</span>
                 <h2>Build your wallet in under a minute</h2>
                 <p>Search by bank or card name and select every credit card you currently use. No card number, CVV, expiry or OTP required.</p>
-                <button className="primary-button" onClick={() => setPickerOpen(true)}><Icon name="plus"/> Add my cards</button>
+                <button className="primary-button" onClick={openWalletPicker}><Icon name="plus"/> Add my cards</button>
                 <div className="privacy-points"><span><Icon name="check" size={14}/> Only card names</span><span><Icon name="check" size={14}/> Editable anytime</span><span><Icon name="check" size={14}/> No bank access</span></div>
               </section>
             ) : (
@@ -1166,18 +1399,18 @@ export default function Home() {
                 <article className="wallet-card" key={card.id}>
                   <CardVisual card={card} />
                   <div className="wallet-card-content">
-                    <div className="wallet-title-row"><div><span>{card.bank}</span><h2>{card.name}</h2></div><button aria-label={`Remove ${card.name}`} onClick={() => toggleCard(card.id)}><Icon name="close" size={17} /></button></div>
+                    <div className="wallet-title-row"><div><span>{card.bank}</span><h2>{card.name}</h2></div><button disabled={walletSaving} aria-label={`Remove ${card.name}`} onClick={() => void removeWalletCard(card.id)}><Icon name="close" size={17} /></button></div>
                     <div className="best-for"><span>Best for</span>{card.bestFor.map((item) => <strong key={item}>{item}</strong>)}</div>
                     <div className="cap-block">
-                      <div className="cap-title"><span>Estimated cap used</span><strong>{card.capUsed}%</strong></div>
+                      <div className="cap-title"><span>Estimated cap used</span><strong>{capAmountFromRule(card.cap) ? `${card.capUsed}%` : card.trackedValue ? `₹${card.trackedValue.toLocaleString("en-IN")} entered` : "Not set"}</strong></div>
                       <div className="cap-track"><span style={{ width: `${card.capUsed}%` }} /></div>
                       <p>{card.cap}</p>
                     </div>
-                    <button className="card-detail-link" onClick={() => { setUsageCard(card); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update cap usage <Icon name="chevron" size={16} /></button>
+                    <button className="card-detail-link" onClick={() => { setUsageCard(card); setUsageSource(walletRows[card.id]?.cap_usage_source === "tracked" ? "tracked" : "manual"); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update cap usage <Icon name="chevron" size={16} /></button>
                   </div>
                 </article>
                 ))}
-                <button className="wallet-add-tile" onClick={() => setPickerOpen(true)}><span><Icon name="plus" /></span><strong>Add another card</strong><p>Search our card catalogue</p></button>
+                <button className="wallet-add-tile" onClick={openWalletPicker}><span><Icon name="plus" /></span><strong>Add another card</strong><p>Search our card catalogue</p></button>
               </section>
               <div className="wallet-disclaimer"><Icon name="info" size={18} /><div><strong>Cap usage starts at zero</strong><p>It changes only when you update it or confirm a payment inside CardSmart.</p></div></div>
               </>
@@ -1190,7 +1423,7 @@ export default function Home() {
             <div className="product-heading"><div><span className="eyebrow"><Icon name="compass" size={15} /> Improve your wallet</span><h1>Which card should you add?</h1><p>We compare a new card against the cards you already own, so you only see genuinely incremental value.</p></div></div>
             {!walletIds.length ? (
               <section className="explore-empty-state">
-                <div className="empty-state-icon"><Icon name="wallet" size={28}/></div><span className="mini-label">Wallet needed first</span><h2>We can’t measure an upgrade without knowing your current cards.</h2><p>Add the cards you own. Then we’ll exclude them and calculate only the additional value a new card can create.</p><button className="primary-button" onClick={() => setPickerOpen(true)}><Icon name="plus"/> Add my current cards</button>
+                <div className="empty-state-icon"><Icon name="wallet" size={28}/></div><span className="mini-label">Wallet needed first</span><h2>We can’t measure an upgrade without knowing your current cards.</h2><p>Add the cards you own. Then we’ll exclude them and calculate only the additional value a new card can create.</p><button className="primary-button" onClick={openWalletPicker}><Icon name="plus"/> Add my current cards</button>
               </section>
             ) : (
               <>
@@ -1308,7 +1541,7 @@ export default function Home() {
         <button className={view === "activity" ? "active" : ""} onClick={() => openProtectedView("activity")}><Icon name="clock" /><span>Activity</span></button>
       </nav>
 
-      {usageCard && <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) setUsageCard(null); }}><section className="usage-modal" role="dialog" aria-modal="true" aria-labelledby="usage-title"><button className="close-button usage-close" onClick={() => setUsageCard(null)}><Icon name="close"/></button><span className="mini-label">Usage setup</span><h2 id="usage-title">Update {usageCard.name} usage</h2><p className="usage-intro">This helps us avoid recommending a reward rate after you have already exhausted its cap.</p><div className="usage-rule"><Icon name="gift"/><div><span>Reward rule being tracked</span><strong>{usageCard.cap}</strong></div></div><label className="usage-field"><span>How much reward have you already earned in this period?</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" value={manualUsage} onChange={(e) => setManualUsage(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0"/></div></label><div className="source-choice"><button className="active"><Icon name="edit" size={15}/><span><strong>User entered</strong><small>Includes usage outside CardSmart</small></span></button><button><Icon name="clock" size={15}/><span><strong>Tracked only</strong><small>Use confirmed payments</small></span></button></div><div className="usage-actions"><button className="secondary-button" onClick={() => setManualUsage("")}>I don’t know</button><button className="primary-button" onClick={() => setUsageCard(null)}>Save usage <Icon name="check"/></button></div><p className="usage-note"><Icon name="info" size={15}/> Stored as an estimate with its source and update date. It does not claim statement-level accuracy.</p></section></div>}
+      {usageCard && <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !walletSaving) setUsageCard(null); }}><section className="usage-modal" role="dialog" aria-modal="true" aria-labelledby="usage-title"><button className="close-button usage-close" disabled={walletSaving} onClick={() => setUsageCard(null)}><Icon name="close"/></button><span className="mini-label">Usage setup</span><h2 id="usage-title">Update {usageCard.name} usage</h2><p className="usage-intro">This helps us avoid recommending a reward rate after you have already exhausted its cap.</p><div className="usage-rule"><Icon name="gift"/><div><span>Reward rule being tracked</span><strong>{usageCard.cap}</strong></div></div><label className="usage-field"><span>How much reward have you already earned in this period?</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" disabled={usageSource === "tracked"} value={usageSource === "tracked" ? String(trackedUsageTotal) : manualUsage} onChange={(e) => setManualUsage(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0"/></div></label><div className="source-choice"><button className={usageSource === "manual" ? "active" : ""} onClick={() => setUsageSource("manual")}><Icon name="edit" size={15}/><span><strong>User entered</strong><small>Includes usage outside CardSmart</small></span></button><button className={usageSource === "tracked" ? "active" : ""} onClick={() => setUsageSource("tracked")}><Icon name="clock" size={15}/><span><strong>Tracked only</strong><small>Use confirmed payments</small></span></button></div><div className="usage-actions"><button className="secondary-button" disabled={walletSaving} onClick={() => void saveCapUsage(null)}>I don’t know</button><button className="primary-button" disabled={walletSaving} onClick={() => void saveCapUsage(usageSource === "tracked" ? trackedUsageTotal : Number(manualUsage) || 0)}>{walletSaving ? "Saving…" : "Save usage"} {!walletSaving && <Icon name="check"/>}</button></div><p className="usage-note"><Icon name="info" size={15}/> Stored as an estimate with its source and update date. It does not claim statement-level accuracy.</p></section></div>}
 
       {pickerOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setPickerOpen(false); }}>
@@ -1333,9 +1566,9 @@ export default function Home() {
             </div>
             <div className="catalog-grid">
               {filteredCatalog.map((card) => {
-                const selected = walletIds.includes(card.id);
+                const selected = walletDraftIds.includes(card.id);
                 return (
-                  <button className={`catalog-card ${selected ? "selected" : ""}`} key={card.id} onClick={() => toggleCard(card.id)}>
+                  <button className={`catalog-card ${selected ? "selected" : ""}`} key={card.id} onClick={() => toggleDraftCard(card.id)}>
                     <span className="catalog-swatch" style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, color: card.accent }}><span>{card.bank.slice(0, 1)}</span></span>
                     <span className="catalog-name"><small>{card.bank}</small><strong>{card.name}</strong><em>{card.network}</em></span>
                     <span className="selection-box">{selected && <Icon name="check" size={16} />}</span>
@@ -1354,11 +1587,12 @@ export default function Home() {
               )}
             </div>
             <div className="picker-footer">
-              <span><strong>{walletIds.length}</strong> {walletIds.length === 1 ? "card" : "cards"} selected</span>
-              <button className="primary-button" disabled={!walletIds.length} onClick={() => { setPickerOpen(false); setFormError(""); requireAccount("save_wallet"); }}>
-                Save my wallet <Icon name="arrow" />
+              <span><strong>{walletDraftIds.length}</strong> {walletDraftIds.length === 1 ? "card" : "cards"} selected</span>
+              <button className="primary-button" disabled={walletSaving || (!walletDraftIds.length && !walletIds.length)} onClick={() => { setFormError(""); void saveWalletDraft(); }}>
+                {walletSaving ? "Saving…" : walletDraftIds.length ? "Save my wallet" : "Clear my wallet"} {!walletSaving && <Icon name="arrow" />}
               </button>
             </div>
+            {walletError && <p className="picker-error">{walletError}</p>}
           </section>
         </div>
       )}

@@ -32,4 +32,13 @@ Never expose a Supabase service-role key in this frontend.
 - Confirming “I paid with this card” updates the same row to `tracked`.
 - My Activity loads the newest 100 saved interactions for the signed-in user.
 - Row-level security restricts every interaction to its owner.
-- Wallet persistence is not included in this version.
+
+## Wallet persistence
+
+- Run `supabase/wallet-persistence.sql` before deploying this frontend.
+- The existing `public.cards` table remains the wallet source of truth; no duplicate wallet table is created.
+- Signed-in users can add, remove, or clear catalogue cards and see the same wallet after refresh or on another device.
+- Picker changes remain a draft until the user presses Save, so closing the picker does not silently alter the wallet.
+- Manual or tracked cap-usage estimates are stored on the user's own card row.
+- Existing custom or unknown legacy card rows are preserved when the catalogue wallet is updated.
+- Row-level security restricts every card row to its owner.
