@@ -87,3 +87,6 @@ on public.profiles
 for update
 using ((select auth.uid()) = id)
 with check ((select auth.uid()) = id);
+
+revoke all on table public.profiles from anon;
+grant select, insert, update on table public.profiles to authenticated;
