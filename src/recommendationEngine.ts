@@ -203,7 +203,7 @@ export function rankCards<T extends RecommendationCard>(cards: T[], input: Recom
 }
 
 export function confidenceLabel(confidence: RuleConfidence) {
-  if (confidence === "verified") return "Issuer rule verified";
-  if (confidence === "reviewed") return "Issuer rule reviewed · assumptions apply";
-  return "Indicative rule · verify before paying";
+  if (confidence === "verified") return "Reward terms checked";
+  if (confidence === "reviewed") return "Reward terms reviewed";
+  return "Estimated from available terms";
 }
