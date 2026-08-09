@@ -1,4 +1,15 @@
-# CardSmart V10.6 — Expanded Netlify Production Build
+# CardSmart V10.7 — Supabase Catalogue Production Build
+
+## V10.7 Supabase catalogue rollout (August 2026)
+
+- Loads active cards and their published reward versions from `card_catalog` and `card_versions` in Supabase.
+- Keeps the bundled 97-card snapshot as an availability fallback only; it is no longer the primary catalogue source.
+- Reconstructs recommendation rules, confidence, caps, exclusions, fees, eligibility and discovery metadata from published database versions.
+- Rejects empty or implausibly small catalogue responses instead of replacing the working fallback with broken data.
+- Preserves the current ordering of the approved catalogue while allowing new database cards to appear after existing models.
+- Does not modify the existing `public.cards` user-wallet table.
+- `supabase/card-catalog-seed-v1.sql` is the exact 97-card seed already loaded into production.
+- Automated source checks and review approval are the next phase; this release does not auto-publish issuer changes.
 
 ## V10.6 product experience and production functionality (August 2026)
 
@@ -16,7 +27,7 @@
 - Only cards with modelled fee and basic income requirements can produce a quantified new-card result.
 - Account deletion calls the authenticated Supabase deletion function and reports failures honestly.
 - Profile, wallet and activity migrations include explicit authenticated-role grants and RLS ownership policies.
-- `npm test` covers 50 recommendation, replay, wallet-contract, discovery and production-flow checks.
+- `npm test` covers recommendation, replay, wallet-contract, discovery, catalogue parsing and production-flow checks.
 
 ## Product system foundation
 

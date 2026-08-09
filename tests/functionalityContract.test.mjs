@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const repository = readFileSync(new URL("../src/catalogueRepository.ts", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -20,6 +21,15 @@ test("wallet additions use authenticated Supabase persistence", () => {
   assert.match(source, /from\("cards"\)\.insert\(inserts\)/);
   assert.match(source, /await persistWallet\(authUser\.id, nextIds\)/);
   assert.match(source, /await loadWallet\(userId\)/);
+});
+
+test("published Supabase catalogue is primary with a bundled safety fallback", () => {
+  assert.match(source, /loadPublishedCatalog\(\)/);
+  assert.match(source, /FALLBACK_CATALOG/);
+  assert.match(source, /setCatalog\(\[\.\.\.snapshot\.cards\]/);
+  assert.match(repository, /from\("card_catalog"\)/);
+  assert.match(repository, /card_versions!inner/);
+  assert.match(repository, /eq\("card_versions\.status", "published"\)/);
 });
 
 test("opening screen explains all three product jobs and exposes stable routes", () => {

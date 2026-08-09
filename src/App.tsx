@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabase";
+import { loadPublishedCatalog } from "./catalogueRepository";
+import type { CardData, DiscoveryMeta } from "./catalogueData";
 import {
   confidenceLabel,
   evaluateCard,
@@ -18,24 +20,6 @@ import {
   savedPaymentContext,
   uniqueKnownIds,
 } from "./productLogic";
-
-type CardData = {
-  id: string;
-  bank: string;
-  name: string;
-  network: "VISA" | "Mastercard" | "RuPay" | "AMEX" | "Diners Club";
-  colors: [string, string];
-  accent: string;
-  bestFor: string[];
-  baseRate: number;
-  rates: Record<string, number>;
-  merchantRates?: Record<string, number>;
-  cap: string;
-  capUsed: number;
-  trackedValue: number;
-  note: string;
-  rewardModel: RewardModel;
-};
 
 type CatalogueCardInput = {
   id: string;
@@ -176,7 +160,7 @@ function catalogueCard({
   };
 }
 
-const CATALOG: CardData[] = [
+const FALLBACK_CATALOG: CardData[] = [
   {
     id: "hdfc-swiggy",
     bank: "HDFC Bank",
@@ -517,15 +501,9 @@ const CATALOG: CardData[] = [
   catalogueCard({ id: "onecard-metal", bank: "OneCard", name: "Metal Card", bestFor: ["Top categories", "App controls"], baseRate: 0.2, rates: { online: 1 } }),
 ];
 
-type DiscoveryMeta = {
-  annualFee: number;
-  minMonthlyIncome: number;
-  goals: string[];
-};
-
 // Only cards with modelled fee and basic income data can make a quantified
 // new-card claim. The broader catalogue remains available for the wallet.
-const DISCOVERY_META: Record<string, DiscoveryMeta> = {
+const FALLBACK_DISCOVERY_META: Record<string, DiscoveryMeta> = {
   "sbi-cashback": { annualFee: 999, minMonthlyIncome: 30000, goals: ["Simple cashback", "Low fees"] },
   "hdfc-millennia": { annualFee: 1000, minMonthlyIncome: 35000, goals: ["Simple cashback", "Low fees"] },
   "hdfc-swiggy": { annualFee: 500, minMonthlyIncome: 25000, goals: ["Simple cashback", "Low fees"] },
@@ -620,8 +598,8 @@ function activityFromDatabase(row: InteractionRow): ActivityItem {
   };
 }
 
-function uniqueKnownCardIds(ids: string[]) {
-  return uniqueKnownIds(ids, CATALOG.map((card) => card.id));
+function uniqueKnownCardIds(ids: string[], catalog: CardData[]) {
+  return uniqueKnownIds(ids, catalog.map((card) => card.id));
 }
 
 function capAmountFromRule(rule: string) {
@@ -702,6 +680,9 @@ async function withDataLoadTimeout<T>(request: PromiseLike<T>): Promise<T> {
 
 export default function Home() {
   const [view, setView] = useState<"home" | "result" | "wallet" | "explore" | "activity" | "profile">("home");
+  const [catalog, setCatalog] = useState<CardData[]>(FALLBACK_CATALOG);
+  const [discoveryMeta, setDiscoveryMeta] = useState<Record<string, DiscoveryMeta>>(FALLBACK_DISCOVERY_META);
+  const [catalogReady, setCatalogReady] = useState(!isSupabaseConfigured);
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
   const [purchaseCategory, setPurchaseCategory] = useState<PurchaseCategory>("auto");
@@ -753,8 +734,36 @@ export default function Home() {
   const walletLoadRequestRef = useRef(0);
   const activityLoadRequestRef = useRef(0);
   const profileLoadRequestRef = useRef(0);
+  const guestSessionRestoredRef = useRef(false);
   const completeAccountActionRef = useRef<(action?: typeof pendingAction, signedInUserId?: string) => Promise<void>>(async () => {});
-  const walletCards = useMemo(() => CATALOG
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let active = true;
+
+    const loadCatalog = async () => {
+      try {
+        const snapshot = await withDataLoadTimeout(loadPublishedCatalog());
+        if (!active) return;
+        const fallbackOrder = new Map(FALLBACK_CATALOG.map((card, index) => [card.id, index]));
+        setCatalog([...snapshot.cards].sort((left, right) => (
+          (fallbackOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+          - (fallbackOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+        )));
+        setDiscoveryMeta(snapshot.discoveryMeta);
+      } catch {
+        // The bundled snapshot keeps the product usable during a transient
+        // catalogue outage. Supabase remains the primary source on every load.
+      } finally {
+        if (active) setCatalogReady(true);
+      }
+    };
+
+    void loadCatalog();
+    return () => { active = false; };
+  }, []);
+
+  const walletCards = useMemo(() => catalog
     .filter((card) => walletIds.includes(card.id))
     .map((card) => {
       const trackedValue = Number(walletRows[card.id]?.cap_usage_value) || 0;
@@ -764,7 +773,7 @@ export default function Home() {
         trackedValue,
         capUsed: capAmount ? Math.min(100, Math.round((trackedValue / capAmount) * 100)) : 0,
       };
-    }), [walletIds, walletRows]);
+    }), [catalog, walletIds, walletRows]);
   const requiredProfileValues = [profile.name, normalizedIndianMobile(profile.mobile), profile.city, profile.employment, profile.incomeBand, profile.primaryGoal, profile.feeComfort];
   const completedProfileFields = requiredProfileValues.filter(Boolean).length;
   const profileCompletion = Math.round((completedProfileFields / requiredProfileValues.length) * 100);
@@ -778,10 +787,10 @@ export default function Home() {
   const upgradeEvaluations = useMemo(() => {
     if (!walletCards.length || !monthlyCardSpend) return null;
     const spendEntries = Object.entries(spendProfile) as [keyof SpendProfile, string][];
-    return Object.entries(DISCOVERY_META)
+    return Object.entries(discoveryMeta)
       .filter(([cardId]) => !walletIds.includes(cardId))
       .map(([cardId, meta]) => {
-        const candidate = CATALOG.find((card) => card.id === cardId);
+        const candidate = catalog.find((card) => card.id === cardId);
         if (!candidate) return null;
         let monthlyGain = 0;
         let largestGap = { category: "everyday spend", value: 0 };
@@ -812,7 +821,7 @@ export default function Home() {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .sort((a, b) => Number(b.incomeFit && b.feeFit) - Number(a.incomeFit && a.feeFit) || b.netAnnualValue - a.netAnnualValue);
-  }, [monthlyCardSpend, profile.feeComfort, profile.incomeBand, profile.primaryGoal, spendProfile, walletCards, walletIds]);
+  }, [catalog, discoveryMeta, monthlyCardSpend, profile.feeComfort, profile.incomeBand, profile.primaryGoal, spendProfile, walletCards, walletIds]);
   const discoveryUpgradeResult = upgradeEvaluations?.find((item) => item.incomeFit && item.feeFit && item.netAnnualValue > 0) ?? null;
   const consideredUpgradeResult = upgradeEvaluations?.find((item) => item.card.id === consideredCardId) ?? null;
   const upgradeResult = exploreMode === "compare" ? consideredUpgradeResult : discoveryUpgradeResult;
@@ -828,12 +837,12 @@ export default function Home() {
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
-  const banks = ["All", ...Array.from(new Set(CATALOG.map((card) => card.bank)))];
-  const bankCounts = CATALOG.reduce<Record<string, number>>((counts, card) => {
+  const banks = ["All", ...Array.from(new Set(catalog.map((card) => card.bank)))];
+  const bankCounts = catalog.reduce<Record<string, number>>((counts, card) => {
     counts[card.bank] = (counts[card.bank] ?? 0) + 1;
     return counts;
   }, {});
-  const filteredCatalog = CATALOG.filter((card) => {
+  const filteredCatalog = catalog.filter((card) => {
     const searchableText = `${card.bank} ${card.name} ${card.network} ${card.bestFor.join(" ")}`.toLowerCase();
     const matchSearch = searchableText.includes(search.toLowerCase());
     const matchBank = bankFilter === "All" || card.bank === bankFilter;
@@ -953,14 +962,14 @@ export default function Home() {
   const applyWalletRows = useCallback((rows: WalletRow[]) => {
     const nextRows: Record<string, WalletRow> = {};
     rows.forEach((row) => {
-      if (CATALOG.some((card) => card.id === row.card_id) && !nextRows[row.card_id]) nextRows[row.card_id] = row;
+      if (catalog.some((card) => card.id === row.card_id) && !nextRows[row.card_id]) nextRows[row.card_id] = row;
     });
     const nextIds = Object.keys(nextRows);
     walletIdsRef.current = nextIds;
     setWalletRows(nextRows);
     setWalletIds(nextIds);
     setWalletDraftIds(nextIds);
-  }, []);
+  }, [catalog]);
 
   const loadWallet = useCallback(async (userId: string) => {
     const requestId = ++walletLoadRequestRef.current;
@@ -989,7 +998,7 @@ export default function Home() {
   }, [applyWalletRows]);
 
   const persistWallet = useCallback(async (userId: string, requestedIds: string[]) => {
-    const nextIds = uniqueKnownCardIds(requestedIds);
+    const nextIds = uniqueKnownCardIds(requestedIds, catalog);
     setWalletSaving(true);
     setWalletError("");
 
@@ -1006,13 +1015,13 @@ export default function Home() {
     }
 
     const existingRows = (existingData ?? []) as WalletRow[];
-    const existingKnownIds = uniqueKnownCardIds(existingRows.map((row) => row.card_id));
+    const existingKnownIds = uniqueKnownCardIds(existingRows.map((row) => row.card_id), catalog);
     const idsToAdd = nextIds.filter((id) => !existingKnownIds.includes(id));
     const idsToRemove = existingKnownIds.filter((id) => !nextIds.includes(id));
 
     if (idsToAdd.length) {
       const inserts = idsToAdd.map((id) => {
-        const card = CATALOG.find((item) => item.id === id)!;
+        const card = catalog.find((item) => item.id === id)!;
         return {
           user_id: userId,
           card_id: card.id,
@@ -1050,7 +1059,7 @@ export default function Home() {
     const loaded = await loadWallet(userId);
     setWalletSaving(false);
     return loaded;
-  }, [loadWallet]);
+  }, [catalog, loadWallet]);
 
   const openWalletPicker = () => {
     setWalletDraftIds(walletIds);
@@ -1063,7 +1072,7 @@ export default function Home() {
   };
 
   const saveWalletDraft = async () => {
-    const nextIds = uniqueKnownCardIds(walletDraftIds);
+    const nextIds = uniqueKnownCardIds(walletDraftIds, catalog);
     if (!authUser) {
       walletIdsRef.current = nextIds;
       setWalletIds(nextIds);
@@ -1115,6 +1124,8 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (!catalogReady || guestSessionRestoredRef.current) return;
+    guestSessionRestoredRef.current = true;
     const saved = window.localStorage.getItem("cardsmart-guest-session");
     if (!saved) return;
     try {
@@ -1125,11 +1136,11 @@ export default function Home() {
         purchaseCategory?: PurchaseCategory;
         paymentChannel?: PaymentChannel;
       };
-      // Restoring a browser session is intentionally a one-time external-state sync.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (guest.walletIds?.length) {
-        const restoredIds = uniqueKnownCardIds(guest.walletIds);
+        const restoredIds = uniqueKnownCardIds(guest.walletIds, catalog);
         walletIdsRef.current = restoredIds;
+        // Restoring a browser session is intentionally a one-time external-state sync.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setWalletIds(restoredIds);
         setWalletDraftIds(restoredIds);
       }
@@ -1138,7 +1149,7 @@ export default function Home() {
       if (guest.purchaseCategory) setPurchaseCategory(guest.purchaseCategory);
       if (guest.paymentChannel) setPaymentChannel(guest.paymentChannel);
     } catch { window.localStorage.removeItem("cardsmart-guest-session"); }
-  }, []);
+  }, [catalog, catalogReady]);
 
   const completeAccountAction = useCallback(async (action = pendingAction, signedInUserId?: string) => {
     setAuthBusy(false);
@@ -1551,7 +1562,7 @@ export default function Home() {
                     <>
                       <span className="hero-verdict-label">One clear answer</span>
                       <div className="hero-card-stack" aria-hidden="true">
-                        {CATALOG.slice(0, 3).map((card, index) => <span key={card.id} style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, transform: `translateY(${index * 18}px) rotate(${(index - 1) * 6}deg)` }}/>) }
+                        {catalog.slice(0, 3).map((card, index) => <span key={card.id} style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, transform: `translateY(${index * 18}px) rotate(${(index - 1) * 6}deg)` }}/>) }
                       </div>
                       <div className="hero-verdict-copy"><strong>Add the cards you own</strong><span>We’ll rank only the cards you can actually use.</span></div>
                     </>
@@ -1968,7 +1979,7 @@ export default function Home() {
                 <section className="explore-layout">
                   <div className="spend-card"><span className="mini-label">Your monthly spend</span><h2>Help us calculate real incremental value</h2><p>Approximate numbers are fine. These values also update your recommendation profile.</p>
                     <div className="spend-grid">{Object.entries(spendProfile).map(([key, value]) => <label key={key}><span>{key[0].toUpperCase() + key.slice(1)}</span><div className="mini-input"><b>₹</b><input inputMode="numeric" value={value} onChange={(e) => { setSpendProfile({ ...spendProfile, [key]: e.target.value.replace(/[^0-9]/g, "") }); setExploreCalculated(false); }} placeholder="0" /></div></label>)}</div>
-                    {exploreMode === "compare" && <label className="considering-field"><span>Card you’re considering</span><div className="input-shell"><Icon name="search"/><select value={consideredCardId} onChange={(event) => { setConsideredCardId(event.target.value); setExploreCalculated(false); }}><option value="">Choose a modelled card</option>{Object.keys(DISCOVERY_META).filter((cardId) => !walletIds.includes(cardId)).map((cardId) => { const card = CATALOG.find((item) => item.id === cardId); return card ? <option value={card.id} key={card.id}>{card.bank} {card.name}</option> : null; })}</select></div></label>}
+                    {exploreMode === "compare" && <label className="considering-field"><span>Card you’re considering</span><div className="input-shell"><Icon name="search"/><select value={consideredCardId} onChange={(event) => { setConsideredCardId(event.target.value); setExploreCalculated(false); }}><option value="">Choose a modelled card</option>{Object.keys(discoveryMeta).filter((cardId) => !walletIds.includes(cardId)).map((cardId) => { const card = catalog.find((item) => item.id === cardId); return card ? <option value={card.id} key={card.id}>{card.bank} {card.name}</option> : null; })}</select></div></label>}
                     <button className="primary-button full-button" disabled={profileComplete && (!monthlyCardSpend || (exploreMode === "compare" && !consideredCardId))} onClick={() => { if (!profileComplete) { openProfile(); return; } if (requireAccount("save_explore")) setExploreCalculated(true); }}>{!profileComplete ? "Complete profile to see my upgrade" : !monthlyCardSpend ? "Add monthly spend to continue" : exploreMode === "compare" && !consideredCardId ? "Choose a card to continue" : exploreMode === "compare" ? "Check this card" : "Calculate my best upgrade"} <Icon name="arrow" /></button>
                   </div>
                   {exploreCalculated && upgradeResult ? (
@@ -2071,7 +2082,7 @@ export default function Home() {
               <section className="activity-empty-state"><div className="empty-state-icon"><Icon name="info" size={28}/></div><span className="mini-label">Couldn’t load activity</span><h2>Your saved history is still protected.</h2><p>{activityError}</p><button className="primary-button" onClick={() => window.location.reload()}>Try again <Icon name="arrow"/></button></section>
             ) : activity.length ? (
               <><div className="activity-toolbar"><div className="activity-tabs"><button className={activityFilter === "all" ? "active" : ""} onClick={() => setActivityFilter("all")}>All</button><button className={activityFilter === "tracked" ? "active" : ""} onClick={() => setActivityFilter("tracked")}>Tracked payments</button><button className={activityFilter === "checked" ? "active" : ""} onClick={() => setActivityFilter("checked")}>Only checked</button></div></div>
-              {visibleActivity.length ? <section className="activity-list">{visibleActivity.map((item) => { const card = CATALOG.find((c) => c.id === item.cardId); const cardLabel = card ? `${shortBankName(card.bank)} ${card.name}` : item.bestCard; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {cardLabel}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward.toLocaleString("en-IN")}</strong><small>₹{item.incremental.toLocaleString("en-IN")} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => repeatPayment(item)} aria-label={`Try ${item.merchant} payment again`}><Icon name="chevron"/></button></article>; })}</section> : <section className="activity-empty-state"><span className="mini-label">No matching activity</span><h2>Nothing in this view yet.</h2><p>Try another activity filter or check a new payment.</p></section>}
+              {visibleActivity.length ? <section className="activity-list">{visibleActivity.map((item) => { const card = catalog.find((c) => c.id === item.cardId); const cardLabel = card ? `${shortBankName(card.bank)} ${card.name}` : item.bestCard; return <article className="activity-row" key={item.id}><div className="merchant-mark">{item.merchant.slice(0,1)}</div><div className="activity-main"><span>{item.date}</span><h2>{item.merchant}</h2><p>₹{item.amount.toLocaleString("en-IN")} · Recommended {cardLabel}</p></div><div className="activity-value"><span>Expected reward</span><strong>₹{item.reward.toLocaleString("en-IN")}</strong><small>₹{item.incremental.toLocaleString("en-IN")} extra</small></div><span className={`status-pill ${item.status}`}>{item.status === "tracked" ? "Payment tracked" : "Only checked"}</span><button className="repeat-button" onClick={() => repeatPayment(item)} aria-label={`Try ${item.merchant} payment again`}><Icon name="chevron"/></button></article>; })}</section> : <section className="activity-empty-state"><span className="mini-label">No matching activity</span><h2>Nothing in this view yet.</h2><p>Try another activity filter or check a new payment.</p></section>}
               <p className="estimate-note"><Icon name="info" size={15}/> “Expected rewards” are estimates. CardSmart does not have access to your bank statement in this prototype.</p></>
             ) : (
               <section className="activity-empty-state"><div className="empty-state-icon"><Icon name="clock" size={28}/></div><span className="mini-label">Nothing tracked yet</span><h2>Your activity will build from your real decisions.</h2><p>Check a payment, choose a recommended card and confirm what you used. We won’t show sample transactions as if they were yours.</p><button className="primary-button" onClick={() => setView("home")}>Check my first payment <Icon name="arrow"/></button></section>
@@ -2093,7 +2104,7 @@ export default function Home() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setPickerOpen(false); }}>
           <section className="card-picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
             <div className="picker-header">
-              <div><span className="mini-label">My wallet</span><h2 id="picker-title">Which cards do you own?</h2><p>Search {CATALOG.length} cards across {banks.length - 1} issuers and select every card you want to compare.</p></div>
+              <div><span className="mini-label">My wallet</span><h2 id="picker-title">Which cards do you own?</h2><p>Search {catalog.length} cards across {banks.length - 1} issuers and select every card you want to compare.</p></div>
               <button className="close-button" onClick={() => setPickerOpen(false)} aria-label="Close card picker"><Icon name="close" /></button>
             </div>
             <div className="picker-tools">
@@ -2101,7 +2112,7 @@ export default function Home() {
               <div className="bank-filters">
                 {banks.map((bank) => (
                   <button className={bankFilter === bank ? "active" : ""} onClick={() => { setBankFilter(bank); setRequestSent(false); }} key={bank}>
-                    <span>{bank}</span><small>{bank === "All" ? CATALOG.length : bankCounts[bank]}</small>
+                    <span>{bank}</span><small>{bank === "All" ? catalog.length : bankCounts[bank]}</small>
                   </button>
                 ))}
               </div>
