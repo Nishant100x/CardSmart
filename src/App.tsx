@@ -628,6 +628,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
     gift: <><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8v12M3 12h18"/><path d="M12 8H8.5a2.5 2.5 0 1 1 2.1-3.8L12 8Zm0 0h3.5a2.5 2.5 0 1 0-2.1-3.8L12 8Z"/></>,
     user: <><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></>,
     phone: <><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M10.5 18h3"/></>,
+    logout: <><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5"/><path d="M14 8l4 4-4 4"/><path d="M8 12h10"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -726,6 +727,7 @@ export default function Home() {
   const [authForm, setAuthForm] = useState({ name: "", mobile: "", email: "", password: "" });
   const [authError, setAuthError] = useState("");
   const [accountDeleting, setAccountDeleting] = useState(false);
+  const [accountSigningOut, setAccountSigningOut] = useState(false);
   const [accountError, setAccountError] = useState("");
   const [pendingAction, setPendingAction] = useState<"save_wallet" | "track_payment" | "activity" | "cap_usage" | "save_explore" | "save_profile" | null>(null);
   const walletIdsRef = useRef(walletIds);
@@ -1368,7 +1370,15 @@ export default function Home() {
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    if (accountSigningOut) return;
+    setAccountSigningOut(true);
+    setAccountError("");
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setAccountError("We couldn’t log you out. Check your connection and try again.");
+      setAccountSigningOut(false);
+      return;
+    }
     setAuthUser(null);
     walletIdsRef.current = [];
     setWalletIds([]);
@@ -1389,6 +1399,7 @@ export default function Home() {
     setAuthNotice("You’re logged out.");
     window.localStorage.removeItem("cardsmart-guest-session");
     window.localStorage.removeItem("cardsmart-pending-action");
+    setAccountSigningOut(false);
   };
 
   const openProtectedView = (nextView: "wallet" | "activity") => {
@@ -1999,7 +2010,10 @@ export default function Home() {
           <div className="product-page profile-page page-enter">
             <div className="profile-page-heading">
               <div><span className="eyebrow"><Icon name="user" size={15}/> Recommendation profile</span><h1>Make every answer fit you.</h1><p>These details help CardSmart judge value, fees and suitability. We don’t ask for PAN, card numbers or bank access.</p></div>
-              <div className="profile-progress"><div><span>Profile completion</span><strong>{profileCompletion}%</strong></div><div className="profile-progress-track"><span style={{ width: `${profileCompletion}%` }}/></div><small>{profileComplete ? "Ready for personalised recommendations" : `${requiredProfileValues.length - completedProfileFields} required details left`}</small></div>
+              <div className="profile-heading-actions">
+                <div className="profile-progress"><div><span>Profile completion</span><strong>{profileCompletion}%</strong></div><div className="profile-progress-track"><span style={{ width: `${profileCompletion}%` }}/></div><small>{profileComplete ? "Ready for personalised recommendations" : `${requiredProfileValues.length - completedProfileFields} required details left`}</small></div>
+                <button type="button" className="account-logout-button" disabled={accountSigningOut} onClick={() => void signOut()}><Icon name="logout" size={17}/>{accountSigningOut ? "Logging out…" : "Log out"}</button>
+              </div>
             </div>
 
             {profileSaved && <div className="auth-success profile-success"><Icon name="check" size={17}/><span>Profile saved. Your next recommendation can use these details.</span><button onClick={() => setProfileSaved(false)}><Icon name="close" size={15}/></button></div>}
@@ -2060,7 +2074,6 @@ export default function Home() {
                   <div><span>Cards owned</span><strong>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"}` : "None added"}</strong></div>
                 </div>
                 <div className="profile-why"><Icon name="shield" size={18}/><div><strong>Used for recommendations only</strong><p>CardSmart does not need exact income, PAN, card numbers, CVV, expiry dates or banking OTPs.</p></div></div>
-                <button className="profile-logout" onClick={() => void signOut()}>Log out of CardSmart</button>
                 <div className="account-danger-zone">
                   <span>Delete account</span>
                   <p>Permanently removes your profile, wallet and saved payment history.</p>

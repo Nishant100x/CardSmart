@@ -1,4 +1,25 @@
-# CardSmart V10.7 — Supabase Catalogue Production Build
+# CardSmart V10.8 — Logout + Catalogue Monitoring
+
+## V10.8 production release (August 2026)
+
+- Makes Log out a prominent Account action on desktop and mobile, with loading and failure handling.
+- Adds an approval-gated Supabase Edge Function for official reward, T&C, fee, announcement and offer monitoring.
+- Seeds 24 official sources covering the 12 priority cards plus issuer-wide offer and announcement pages.
+- Establishes a content-hash baseline on first fetch; OpenAI runs only after a later source change.
+- Uses structured output to create deduplicated `pending` change candidates with evidence and confidence.
+- Stores source snapshots and run history for traceability and troubleshooting.
+- Never auto-publishes a card version or offer. A human must review and apply every detected change.
+
+### Monitoring activation
+
+1. Run `supabase/card-monitoring-setup.sql` in the Supabase SQL Editor.
+2. Deploy `supabase/functions/card-monitor` with `supabase functions deploy card-monitor`.
+3. Add backend-only Edge Function secrets: `OPENAI_API_KEY`, `OPENAI_MODEL=gpt-5.6-luna`, and a random `MONITOR_SECRET`.
+4. Invoke the function once manually. The first successful checks establish baselines and should create zero candidates.
+5. Store the project URL and the same monitor secret in Supabase Vault, then run `supabase/card-monitoring-schedule.sql`.
+6. Use `supabase/card-monitoring-verify.sql` to inspect runs, source health and the pending review queue.
+
+The function is intentionally configured with Supabase JWT verification disabled because Cron is not a user session. It rejects every request unless the `x-monitor-secret` header exactly matches the backend-only `MONITOR_SECRET`.
 
 ## V10.7 Supabase catalogue rollout (August 2026)
 
@@ -9,7 +30,7 @@
 - Preserves the current ordering of the approved catalogue while allowing new database cards to appear after existing models.
 - Does not modify the existing `public.cards` user-wallet table.
 - `supabase/card-catalog-seed-v1.sql` is the exact 97-card seed already loaded into production.
-- Automated source checks and review approval are the next phase; this release does not auto-publish issuer changes.
+- Automated source checks are implemented in V10.8; review approval remains deliberately manual and never auto-publishes issuer changes.
 
 ## V10.6 product experience and production functionality (August 2026)
 

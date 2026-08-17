@@ -4,6 +4,9 @@ import test from "node:test";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const repository = readFileSync(new URL("../src/catalogueRepository.ts", import.meta.url), "utf8");
+const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+const monitor = readFileSync(new URL("../supabase/functions/card-monitor/index.ts", import.meta.url), "utf8");
+const monitoringSql = readFileSync(new URL("../supabase/card-monitoring-setup.sql", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -52,4 +55,18 @@ test("public opening includes the complete production landing journey", () => {
 test("account deletion uses the production Supabase RPC", () => {
   assert.match(source, /supabase\.rpc\("delete_cardsmart_account"\)/);
   assert.match(source, /Delete my CardSmart data/);
+});
+
+test("account exposes a prominent resilient logout action", () => {
+  assert.match(source, /className="account-logout-button"/);
+  assert.match(source, /accountSigningOut/);
+  assert.match(source, /We couldn’t log you out/);
+  assert.match(css, /\.account-logout-button/);
+});
+
+test("monitoring is approval gated and never auto-publishes catalogue changes", () => {
+  assert.match(monitor, /status: "pending"/);
+  assert.doesNotMatch(monitor, /status:\s*"published"/);
+  assert.match(monitoringSql, /card_source_snapshots/);
+  assert.match(monitoringSql, /begin_card_monitoring_run/);
 });

@@ -1,0 +1,2 @@
+[functions.card-monitor]
+verify_jwt = false
