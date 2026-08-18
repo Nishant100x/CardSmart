@@ -839,6 +839,8 @@ export default function Home() {
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
+  const isFirstTimeExperience = walletIds.length === 0;
+  const latestActivity = activity[0] ?? null;
   const banks = ["All", ...Array.from(new Set(catalog.map((card) => card.bank)))];
   const bankCounts = catalog.reduce<Record<string, number>>((counts, card) => {
     counts[card.bank] = (counts[card.bank] ?? 0) + 1;
@@ -850,6 +852,13 @@ export default function Home() {
     const matchBank = bankFilter === "All" || card.bank === bankFilter;
     return matchSearch && matchBank;
   });
+  const accountPrompt = pendingAction === "activity"
+    ? { kicker: "Keep your decisions", title: "Save payments to build your savings.", description: "Your savings view is based on payments you actually check and confirm. Create an account to keep that history private and in sync." }
+    : pendingAction === "save_wallet"
+      ? { kicker: "Keep your wallet", title: "Save your cards for next time.", description: "Create an account so you don’t have to add your card names again on every device." }
+      : pendingAction === "track_payment"
+        ? { kicker: "Save this result", title: "Track what the better choice earns.", description: "Create an account to save this recommendation and include it in your running savings total." }
+        : { kicker: "One quick step", title: "Create your account", description: "Save your wallet, payment history and recommendation profile in one place." };
 
   const persistInteraction = useCallback(async (
     userId: string,
@@ -943,6 +952,13 @@ export default function Home() {
     setMerchant(name);
     setAmount(value);
     setFormError("");
+  };
+
+  const openPaymentChecker = () => {
+    setView("home");
+    window.setTimeout(() => {
+      document.getElementById("payment-checker")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
   };
 
   const repeatPayment = (item: ActivityItem) => {
@@ -1240,6 +1256,12 @@ export default function Home() {
   }, [authUser, loadWallet]);
 
   useEffect(() => {
+    if (!authNotice) return;
+    const timeoutId = window.setTimeout(() => setAuthNotice(""), 4200);
+    return () => window.clearTimeout(timeoutId);
+  }, [authNotice]);
+
+  useEffect(() => {
     if (!authUser) {
       profileLoadRequestRef.current += 1;
       setProfileLoading(false);
@@ -1518,7 +1540,7 @@ export default function Home() {
           </button>
           <nav className="side-nav" aria-label="Primary navigation">
             <button className={view === "home" || view === "result" ? "active" : ""} onClick={() => setView("home")}>
-              <span>Choose a card</span>
+              <span>Check a payment</span>
             </button>
             <button className={view === "wallet" ? "active" : ""} onClick={() => openProtectedView("wallet")}>
               <span>My cards</span><small>{walletIds.length}</small>
@@ -1541,7 +1563,7 @@ export default function Home() {
       <main className="main-content">
         <header className="mobile-header">
           <button className="brand" onClick={() => setView("home")} aria-label="CardSmart home">
-            <span className="brand-mark"><span>C</span></span><span className="brand-copy"><strong>CardSmart</strong><small>Pay smarter</small></span>
+            <span className="brand-mark"><span>C</span></span><span className="brand-copy"><strong>CardSmart</strong><small>Before you pay</small></span>
           </button>
           <button className="avatar" aria-label={signedIn ? "Open profile" : "Log in"} onClick={openProfile}>{signedIn ? (profile.name?.[0] || authUser?.user_metadata?.name?.[0] || authUser?.email?.[0] || "U").toUpperCase() : <Icon name="user" size={17}/>}</button>
         </header>
@@ -1549,40 +1571,61 @@ export default function Home() {
         {view === "home" && (
           <div className="home-page page-enter">
             {authNotice && <div className="auth-success"><Icon name="check" size={17}/><span>{authNotice}</span><button onClick={() => setAuthNotice("")}><Icon name="close" size={15}/></button></div>}
-            <section className="home-stage">
-              <div className="hero-command-layout">
-                <div className="hero-copy">
-                  <span className="eyebrow"><Icon name="spark" size={15} /> Your credit-card decision layer</span>
-                  <h1>Use the right card.<br className="desktop-break" /> Know if you need another.</h1>
-                  <p>CardSmart compares the cards you own, shows what each payment will earn, tracks the extra value you unlock, and tells you when a new card genuinely adds more after fees.</p>
-                  <div className="job-outcomes" aria-label="What CardSmart helps you do">
-                    <button onClick={() => setView("home")}><span>01</span><strong>Best card for this payment</strong></button>
-                    <button onClick={() => openProtectedView("activity")}><span>02</span><strong>Extra rewards found</strong></button>
-                    <button onClick={() => setView("explore")}><span>03</span><strong>Whether a new card is worth it</strong></button>
+            <section className={`home-stage ${isFirstTimeExperience ? "home-stage--first" : "home-stage--returning"}`}>
+              {isFirstTimeExperience ? (
+                <div className="hero-command-layout hero-command-layout--first">
+                  <div className="hero-copy hero-copy--first">
+                    <span className="eyebrow"><Icon name="spark" size={15} /> Before your next payment</span>
+                    <h1>Never guess which card to use.</h1>
+                    <p>Add the cards you own once. Then enter any store and amount to see which one earns you the most before checkout.</p>
+                    <div className="hero-actions">
+                      <button className="hero-primary-action" onClick={openWalletPicker}><Icon name="wallet" size={17}/> Add my cards</button>
+                      <button className="hero-secondary-action" onClick={openPaymentChecker}>Try a payment <Icon name="arrow" size={16}/></button>
+                    </div>
+                    <div className="first-time-steps" aria-label="How CardSmart works">
+                      <span><b>1</b>Add cards</span><i/><span><b>2</b>Enter payment</span><i/><span><b>3</b>Use the winner</span>
+                    </div>
                   </div>
+                  <aside className="first-payment-demo" aria-label="Example CardSmart recommendation">
+                    <div className="demo-payment"><span>Payment</span><strong>Swiggy · ₹2,000</strong></div>
+                    <div className="demo-route"><span/><span/><span/></div>
+                    <div className="demo-winner">
+                      <span className="demo-label">Best card</span>
+                      <CardVisual card={catalog.find((card) => card.id === "hdfc-swiggy") ?? catalog[0]} compact />
+                      <div><strong>HDFC Swiggy</strong><span>Earn about ₹200</span></div>
+                    </div>
+                    <div className="demo-gain"><Icon name="spark" size={15}/><strong>₹180 more</strong><span>than a basic 1% card</span></div>
+                  </aside>
                 </div>
-                <aside className={`hero-verdict ${winner ? "hero-verdict--ready" : ""}`}>
-                  {winner ? (
-                    <>
-                      <span className="hero-verdict-label">Best for this payment</span>
-                      <CardVisual card={winner.card} compact />
-                      <div className="hero-verdict-copy"><strong>{shortBankName(winner.card.bank)} {winner.card.name}</strong><span>Earn about ₹{winner.value.toLocaleString("en-IN")}</span></div>
-                      {runnerUp && winner.value > runnerUp.value && <div className="hero-extra"><Icon name="spark" size={15}/><strong>₹{(winner.value - runnerUp.value).toLocaleString("en-IN")} more</strong><span>than your next best card</span></div>}
-                    </>
-                  ) : (
-                    <>
-                      <span className="hero-verdict-label">One clear answer</span>
-                      <div className="hero-card-stack" aria-hidden="true">
-                        {catalog.slice(0, 3).map((card, index) => <span key={card.id} style={{ background: `linear-gradient(135deg, ${card.colors[0]}, ${card.colors[1]})`, transform: `translateY(${index * 18}px) rotate(${(index - 1) * 6}deg)` }}/>) }
-                      </div>
-                      <div className="hero-verdict-copy"><strong>Add the cards you own</strong><span>We’ll rank only the cards you can actually use.</span></div>
-                    </>
-                  )}
-                </aside>
-              </div>
+              ) : (
+                <div className="hero-command-layout hero-command-layout--returning">
+                  <div className="hero-copy hero-copy--returning">
+                    <span className="eyebrow"><Icon name="spark" size={15} /> {signedIn ? `Welcome back${profile.name ? `, ${profile.name.split(" ")[0]}` : ""}` : "Your wallet is ready"}</span>
+                    <h1>What are you paying for?</h1>
+                    <p>{walletIds.length} {walletIds.length === 1 ? "card is" : "cards are"} ready to compare. Enter the payment and get one answer in seconds.</p>
+                    <div className="returning-signals">
+                      <span><strong>{walletIds.length}</strong> cards ready</span>
+                      <span><strong>₹{activityIncrementalTotal.toLocaleString("en-IN")}</strong> extra value tracked</span>
+                      {latestActivity && <button onClick={() => repeatPayment(latestActivity)}><Icon name="clock" size={14}/> Repeat {latestActivity.merchant}</button>}
+                    </div>
+                  </div>
+                  <aside className={`hero-verdict ${winner ? "hero-verdict--ready" : ""}`}>
+                    {winner ? (
+                      <>
+                        <span className="hero-verdict-label">Current best match</span>
+                        <CardVisual card={winner.card} compact />
+                        <div className="hero-verdict-copy"><strong>{shortBankName(winner.card.bank)} {winner.card.name}</strong><span>About ₹{winner.value.toLocaleString("en-IN")} on the payment below</span></div>
+                        {runnerUp && winner.value > runnerUp.value && <div className="hero-extra"><Icon name="spark" size={15}/><strong>₹{(winner.value - runnerUp.value).toLocaleString("en-IN")} more</strong><span>than your next best card</span></div>}
+                      </>
+                    ) : (
+                      <><span className="hero-verdict-label">Wallet ready</span><div className="hero-verdict-copy"><strong>Enter a payment below</strong><span>We’ll compare every card you own.</span></div></>
+                    )}
+                  </aside>
+                </div>
+              )}
 
               <div className="payment-panel" id="payment-checker">
-              <div className="command-heading"><span className="command-dot"/><div><span>Ready when you are</span><strong>Where are you paying?</strong></div></div>
+              <div className="command-heading"><span className="command-dot"/><div><span>{isFirstTimeExperience ? "Try your first payment" : "Ready when you are"}</span><strong>Where are you paying?</strong></div></div>
               <form onSubmit={submitPayment}>
                 <div className="field-group">
                   <label htmlFor="merchant">Store, app or purchase</label>
@@ -1687,13 +1730,13 @@ export default function Home() {
 
             <div className="security-line"><Icon name="shield" size={17} /> Card names only. No card number, CVV, OTP or bank access.</div>
 
-            {!signedIn && (
+            {!signedIn && isFirstTimeExperience && (
               <div className="public-landing">
                 <section className="landing-section decision-section" aria-labelledby="decisions-title">
                   <div className="landing-heading">
-                    <span className="landing-kicker">One product. Three decisions.</span>
-                    <h2 id="decisions-title">Your cards should work harder.<br/>Without you memorising the rules.</h2>
-                    <p>CardSmart turns complicated reward rates, exclusions, monthly caps and annual fees into answers you can actually use.</p>
+                    <span className="landing-kicker">Three decisions. One wallet.</span>
+                    <h2 id="decisions-title">Before you pay, know exactly what your cards can do.</h2>
+                    <p>Pick the best card for a payment, track the extra value, and only add a new card when it beats what you already own after fees.</p>
                   </div>
 
                   <div className="decision-grid">
@@ -2104,8 +2147,17 @@ export default function Home() {
         )}
       </main>
 
+      {view !== "result" && view !== "profile" && !pickerOpen && !authOpen && !usageCard && (
+        <button className="mobile-payment-cta" onClick={openPaymentChecker}>
+          <span><Icon name="spark" size={16}/></span>
+          <strong>Check a payment</strong>
+          <small>Find the best card</small>
+          <Icon name="arrow" size={17}/>
+        </button>
+      )}
+
       <nav className="mobile-nav" aria-label="Mobile navigation">
-        <button className={view === "home" || view === "result" ? "active" : ""} onClick={() => setView("home")}><Icon name="spark" /><span>Choose</span></button>
+        <button className={view === "home" || view === "result" ? "active" : ""} onClick={() => setView("home")}><Icon name="spark" /><span>Payment</span></button>
         <button className={view === "wallet" ? "active" : ""} onClick={() => openProtectedView("wallet")}><Icon name="wallet" /><span>Cards</span></button>
         <button className={view === "explore" ? "active" : ""} onClick={() => setView("explore")}><Icon name="compass" /><span>Get a card</span></button>
         <button className={view === "activity" ? "active" : ""} onClick={() => openProtectedView("activity")}><Icon name="clock" /><span>Savings</span></button>
@@ -2183,9 +2235,9 @@ export default function Home() {
               </div>
             ) : (
               <>
-                <span className="mini-label">{authMode === "signup" ? "One quick step" : "Welcome back"}</span>
-                <h2 id="auth-title">{authMode === "signup" ? "Create your account" : "Log in to CardSmart"}</h2>
-                <p>{authMode === "signup" ? "Create your profile for recommendations that fit your goals and spending." : "Access your saved recommendation profile."}</p>
+                <span className="mini-label">{authMode === "signup" ? accountPrompt.kicker : "Welcome back"}</span>
+                <h2 id="auth-title">{authMode === "signup" ? accountPrompt.title : "Log in to CardSmart"}</h2>
+                <p>{authMode === "signup" ? accountPrompt.description : "Access your saved wallet, payment history and profile."}</p>
                 <form className="auth-form" onSubmit={submitAuth}>
                   {authMode === "signup" && <label>Full name<div className="auth-input"><input autoComplete="name" placeholder="Your full name" value={authForm.name} onChange={(e) => setAuthForm({...authForm, name:e.target.value})}/></div></label>}
                   {authMode === "signup" && <label>Mobile number *<div className="auth-input"><span>+91</span><input type="tel" inputMode="numeric" autoComplete="tel-national" placeholder="10-digit mobile number" maxLength={10} value={authForm.mobile} onChange={(e) => setAuthForm({...authForm, mobile:mobileDigits(e.target.value)})}/></div></label>}

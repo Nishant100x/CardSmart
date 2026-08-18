@@ -1,4 +1,18 @@
-# CardSmart V10.8 — Logout + Catalogue Monitoring
+# CardSmart V10.9 — Payment-first Journey
+
+## V10.9 experience release (August 2026)
+
+- Separates first-time activation from the returning-user home experience using actual wallet state.
+- Gives new users a concise “add cards → enter payment → use the winner” journey with an illustrative payment outcome.
+- Gives returning users a compact payment command centre with wallet count, tracked extra value and latest-payment replay.
+- Keeps the payment action reachable across mobile screens through a floating “Check a payment” action and clearer Payment navigation.
+- Reworks the public opening copy around the concrete before-you-pay job instead of a generic feature tour.
+- Makes save/login prompts explain the specific value being protected: wallet, payment result or savings history.
+- Converts large in-flow success messages into auto-dismissing floating notices so they do not consume the first fold.
+- Raises text contrast and minimum supporting-copy sizes across Home, results, wallet, discovery, savings, profile, modals and card selection.
+- Adds purposeful motion to state changes, payment focus, recommendation cards and calls to action while respecting reduced-motion settings.
+
+## V10.8 — Logout + Catalogue Monitoring
 
 ## V10.8 production release (August 2026)
 

@@ -35,15 +35,24 @@ test("published Supabase catalogue is primary with a bundled safety fallback", (
   assert.match(repository, /eq\("card_versions\.status", "published"\)/);
 });
 
-test("opening screen explains all three product jobs and exposes stable routes", () => {
-  assert.match(source, /Use the right card\./);
-  assert.match(source, /Extra rewards found/);
-  assert.match(source, /Whether a new card is worth it/);
+test("home separates first-time activation from the returning payment command", () => {
+  assert.match(source, /isFirstTimeExperience/);
+  assert.match(source, /Never guess which card to use\./);
+  assert.match(source, /What are you paying for\?/);
+  assert.match(source, /hero-command-layout--first/);
+  assert.match(source, /hero-command-layout--returning/);
   assert.match(source, /#\/\$\{route\}/);
 });
 
+test("payment stays explicit and reachable across the mobile journey", () => {
+  assert.match(source, /className="mobile-payment-cta"/);
+  assert.match(source, /Check a payment/);
+  assert.match(source, /openPaymentChecker/);
+  assert.match(css, /\.mobile-payment-cta/);
+});
+
 test("public opening includes the complete production landing journey", () => {
-  assert.match(source, /One product\. Three decisions\./);
+  assert.match(source, /Three decisions\. One wallet\./);
   assert.match(source, /A real decision, made obvious/);
   assert.match(source, /How CardSmart works/);
   assert.match(source, /A recommendation with a higher bar/);
