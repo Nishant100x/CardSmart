@@ -225,6 +225,12 @@ const hdfcPoints = {
     optimisedValuePerUnit: 1,
     standardRedemption: "Statement credit",
     optimisedRedemption: "SmartBuy travel",
+    redemptionOptions: [
+      { id: "cash", type: "cash" as const, label: "Statement credit", valuePerUnit: 0.3 },
+      { id: "voucher", type: "voucher" as const, label: "Shopping vouchers", valuePerUnit: 0.5 },
+      { id: "travel", type: "travel" as const, label: "SmartBuy travel", valuePerUnit: 1 },
+      { id: "transfer", type: "transfer" as const, label: "Airmile transfer", conversionUnitsPerPoint: 1, conversionUnitLabel: "airmiles" },
+    ],
   },
 };
 
@@ -249,6 +255,77 @@ test("optimised redemption can be requested without changing the underlying poin
   assert.equal(result.rewardUnits, 66);
   assert.equal(result.value, 66);
   assert.equal(result.valueMode, "optimised");
+});
+
+test("a user preference changes the selected redemption route and card ranking", () => {
+  const pointsCard = card({ id: "points" }, { defaultEarning: hdfcPoints });
+  const cashbackCard = card({ id: "cashback", baseRate: 1.5, rates: { online: 1.5, dining: 1.5, travel: 1.5, grocery: 1.5 } });
+  const input = { merchant: "Retail store", amount: 2000, category: "shopping" as const, channel: "offline" as const };
+  assert.equal(rankCards([pointsCard, cashbackCard], input, { redemptionPreference: "cash" })[0].card.id, "cashback");
+  const shoppingResult = rankCards([pointsCard, cashbackCard], input, { redemptionPreference: "shopping" })[0];
+  assert.equal(shoppingResult.card.id, "points");
+  assert.equal(shoppingResult.value, 33);
+  assert.equal(shoppingResult.selectedRedemption?.label, "Shopping vouchers");
+});
+
+test("transfer routes disclose converted units without inventing rupee value", () => {
+  const result = evaluateCard(card({}, { defaultEarning: hdfcPoints }),
+    { merchant: "Retail", amount: 2000, category: "shopping", channel: "offline" });
+  const transfer = result.redemptionValues.find((option) => option.type === "transfer");
+  assert.equal(transfer?.value, null);
+  assert.equal(transfer?.convertedUnits, 66);
+  assert.equal(transfer?.conversionUnitLabel, "airmiles");
+});
+
+test("tiered voucher value is used only when the saved balance reaches its threshold", () => {
+  const tiered = { ...hdfcPoints, currency: { ...hdfcPoints.currency, redemptionOptions: [
+    { id: "cash", type: "cash" as const, label: "Cash", valuePerUnit: 0.25 },
+    { id: "gold", type: "voucher" as const, label: "Gold Collection", tiers: [{ units: 18000, value: 9000, label: "₹9,000 voucher" }] },
+  ] } };
+  const input = { merchant: "Retail", amount: 2000, category: "shopping" as const, channel: "offline" as const };
+  const withoutBalance = evaluateCard(card({}, { defaultEarning: tiered }), input, { redemptionPreference: "shopping" });
+  assert.equal(withoutBalance.selectedRedemption, null);
+  assert.equal(withoutBalance.value, 0);
+  const withBalance = evaluateCard(card({}, { defaultEarning: tiered }), input, {
+    redemptionPreference: "shopping", ledgers: { "test-card": { pointsBalance: 17950 } },
+  });
+  assert.equal(withBalance.selectedRedemption?.label, "Gold Collection");
+  assert.equal(withBalance.value, 33);
+});
+
+test("milestones use a user ledger and stay outside today's reward value", () => {
+  const milestoneCard = card({}, { defaultEarning: hdfcPoints, milestones: [{
+    id: "fee-waiver", label: "Fee waiver", period: "anniversary_year", metric: "spend",
+    threshold: 100000, benefitLabel: "Annual fee waived", benefitValue: 5000,
+  }] });
+  const result = evaluateCard(milestoneCard,
+    { merchant: "Retail", amount: 2000, category: "shopping", channel: "offline" },
+    { ledgers: { "test-card": { annualEligibleSpend: 99000 } } });
+  assert.equal(result.value, 20);
+  assert.equal(result.milestoneProgress[0].crossed, true);
+  assert.equal(result.milestoneProgress[0].remaining, 0);
+  assert.equal(result.milestoneProgress[0].benefitValue, 5000);
+});
+
+test("unknown milestone ledger is disclosed instead of assumed to be zero", () => {
+  const result = evaluateCard(card({}, { milestones: [{
+    id: "monthly", label: "Monthly spend", period: "calendar_month", metric: "spend",
+    threshold: 20000, benefitLabel: "1,000 points",
+  }] }), { merchant: "Retail", amount: 2000, category: "shopping", channel: "offline" });
+  assert.equal(result.milestoneProgress[0].before, null);
+  assert.equal(result.milestoneProgress[0].after, null);
+  assert.equal(result.milestoneProgress[0].crossed, false);
+});
+
+test("an excluded category does not advance a known milestone ledger", () => {
+  const result = evaluateCard(card({}, { exclusions: ["fuel"], milestones: [{
+    id: "annual", label: "Annual spend", period: "anniversary_year", metric: "spend",
+    threshold: 100000, benefitLabel: "Fee waiver",
+  }] }), { merchant: "Fuel", amount: 2000, category: "fuel", channel: "offline" }, {
+    ledgers: { "test-card": { annualEligibleSpend: 50000 } },
+  });
+  assert.equal(result.milestoneProgress[0].before, 50000);
+  assert.equal(result.milestoneProgress[0].after, 50000);
 });
 
 function offer(overrides: Partial<CardOffer> = {}): CardOffer {

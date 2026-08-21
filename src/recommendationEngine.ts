@@ -5,6 +5,27 @@ export type PurchaseCategory =
 export type PaymentChannel = "auto" | "online" | "offline" | "upi" | "app";
 export type RuleConfidence = "verified" | "reviewed" | "indicative";
 export type RewardValueMode = "standard" | "optimised";
+export type RedemptionPreference = "balanced" | "cash" | "shopping" | "travel";
+export type RedemptionType = "cash" | "voucher" | "product" | "travel" | "transfer";
+
+export type RedemptionTier = {
+  units: number;
+  value?: number;
+  label: string;
+};
+
+export type RedemptionOption = {
+  id: string;
+  type: RedemptionType;
+  label: string;
+  valuePerUnit?: number;
+  conversionUnitsPerPoint?: number;
+  conversionUnitLabel?: string;
+  tiers?: RedemptionTier[];
+  conditions?: string[];
+  sourceUrl?: string;
+  confidence?: RuleConfidence;
+};
 
 export type RewardCurrency = {
   code: string;
@@ -14,6 +35,20 @@ export type RewardCurrency = {
   optimisedValuePerUnit?: number;
   standardRedemption: string;
   optimisedRedemption?: string;
+  redemptionOptions?: RedemptionOption[];
+};
+
+export type MilestoneRule = {
+  id: string;
+  label: string;
+  period: "calendar_month" | "anniversary_year";
+  metric: "spend" | "transactions";
+  threshold: number;
+  minTransactionAmount?: number;
+  benefitLabel: string;
+  benefitValue?: number;
+  requiresEnrollment?: boolean;
+  sourceUrl?: string;
 };
 
 export type RewardEarning =
@@ -51,6 +86,7 @@ export type RewardModel = {
   channelRates?: Partial<Record<Exclude<PaymentChannel, "auto">, number>>;
   channelEarnings?: Partial<Record<Exclude<PaymentChannel, "auto">, RewardEarning>>;
   defaultCapAmount?: number;
+  milestones?: MilestoneRule[];
   assumptions?: string[];
 };
 
@@ -102,6 +138,46 @@ export type EvaluationContext = {
   offers?: CardOffer[];
   asOf?: string | Date;
   rewardValueMode?: RewardValueMode;
+  redemptionPreference?: RedemptionPreference;
+  ledgers?: Record<string, RewardLedger>;
+};
+
+export type RewardLedger = {
+  pointsBalance?: number;
+  monthlyEligibleSpend?: number;
+  annualEligibleSpend?: number;
+  qualifyingTransactions?: number;
+  updatedAt?: string;
+};
+
+export type RedemptionValue = {
+  id: string;
+  type: RedemptionType;
+  label: string;
+  value: number | null;
+  valuePerUnit: number | null;
+  convertedUnits: number | null;
+  conversionUnitLabel: string | null;
+  tiers: RedemptionTier[];
+  conditions: string[];
+  sourceUrl?: string;
+  confidence: RuleConfidence;
+};
+
+export type MilestoneProgress = {
+  id: string;
+  label: string;
+  period: MilestoneRule["period"];
+  metric: MilestoneRule["metric"];
+  threshold: number;
+  before: number | null;
+  after: number | null;
+  remaining: number | null;
+  crossed: boolean;
+  benefitLabel: string;
+  benefitValue?: number;
+  requiresEnrollment: boolean;
+  sourceUrl?: string;
 };
 
 export type AppliedOffer = {
@@ -130,6 +206,10 @@ export type RecommendationResult<T extends RecommendationCard> = {
   rewardUnitLabel: string | null;
   standardRedemption: string | null;
   optimisedRedemption: string | null;
+  selectedRedemption: RedemptionValue | null;
+  redemptionValues: RedemptionValue[];
+  bestKnownRedemptionValue: number;
+  milestoneProgress: MilestoneProgress[];
   valueMode: RewardValueMode;
   offersApplied: AppliedOffer[];
   capAmount: number | null;
@@ -190,24 +270,112 @@ function matchingMerchantRule(
   });
 }
 
-function evaluateEarning(earning: RewardEarning, amount: number, valueMode: RewardValueMode) {
+function redemptionValuesForCurrency(currency: RewardCurrency, rewardUnits: number, pointsBalance?: number): RedemptionValue[] {
+  const configured: RedemptionOption[] = currency.redemptionOptions?.length
+    ? currency.redemptionOptions
+    : [
+        { id: "standard", type: "cash" as const, label: currency.standardRedemption, valuePerUnit: currency.standardValuePerUnit },
+        ...(currency.optimisedValuePerUnit && currency.optimisedValuePerUnit !== currency.standardValuePerUnit
+          ? [{ id: "optimised", type: "travel" as const, label: currency.optimisedRedemption ?? "Higher-value redemption", valuePerUnit: currency.optimisedValuePerUnit }]
+          : []),
+      ];
+  return configured.map((option) => {
+    const eligibleTier = pointsBalance === undefined ? undefined : (option.tiers ?? [])
+      .filter((tier) => pointsBalance + rewardUnits >= tier.units && tier.value !== undefined)
+      .sort((left, right) => ((right.value ?? 0) / right.units) - ((left.value ?? 0) / left.units))[0];
+    const tierValuePerUnit = eligibleTier?.value === undefined ? undefined : eligibleTier.value / eligibleTier.units;
+    const valuePerUnit = option.valuePerUnit ?? tierValuePerUnit;
+    return {
+    id: option.id,
+    type: option.type,
+    label: option.label,
+    value: valuePerUnit === undefined ? null : Math.round(rewardUnits * valuePerUnit),
+    valuePerUnit: valuePerUnit ?? null,
+    convertedUnits: option.conversionUnitsPerPoint === undefined
+      ? null : Number((rewardUnits * option.conversionUnitsPerPoint).toFixed(2)),
+    conversionUnitLabel: option.conversionUnitLabel ?? null,
+    tiers: option.tiers ?? [],
+    conditions: option.conditions ?? [],
+    sourceUrl: option.sourceUrl,
+    confidence: option.confidence ?? "reviewed",
+  }; });
+}
+
+function optionMatchesPreference(option: RedemptionValue, preference: RedemptionPreference) {
+  if (preference === "cash") return option.type === "cash";
+  if (preference === "shopping") return option.type === "voucher" || option.type === "product";
+  if (preference === "travel") return option.type === "travel";
+  return false;
+}
+
+function evaluateEarning(
+  earning: RewardEarning, amount: number, valueMode: RewardValueMode,
+  preference: RedemptionPreference = "balanced",
+  pointsBalance?: number,
+) {
   if (earning.kind === "cashback") {
     const value = Math.round((amount * earning.rate) / 100);
     return { rate: earning.rate, grossValue: value, standardValue: value, optimisedValue: value,
-      rewardUnits: null, rewardUnitLabel: null, standardRedemption: null, optimisedRedemption: null };
+      rewardUnits: null, rewardUnitLabel: null, standardRedemption: null, optimisedRedemption: null,
+      selectedRedemption: null, redemptionValues: [] as RedemptionValue[], bestKnownRedemptionValue: value };
   }
   const rawUnits = (amount / earning.spendUnit) * earning.units;
   const rewardUnits = earning.rounding === "exact" ? rawUnits : Math.floor(rawUnits);
+  const redemptionValues = redemptionValuesForCurrency(earning.currency, rewardUnits, pointsBalance);
   const standardValue = Math.round(rewardUnits * earning.currency.standardValuePerUnit);
-  const optimisedValue = Math.round(rewardUnits * (earning.currency.optimisedValuePerUnit ?? earning.currency.standardValuePerUnit));
-  const grossValue = valueMode === "optimised" ? optimisedValue : standardValue;
+  const knownValues = redemptionValues.filter((option) => option.value !== null);
+  const optimisedValue = Math.max(standardValue, ...knownValues.map((option) => option.value ?? 0));
+  const preferred = preference === "balanced"
+    ? null
+    : knownValues.filter((option) => optionMatchesPreference(option, preference)).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))[0] ?? null;
+  const defaultRedemption = knownValues.find((option) => option.type === "cash") ?? knownValues[0] ?? null;
+  const selectedRedemption = preference === "balanced" ? defaultRedemption : preferred;
+  const grossValue = valueMode === "optimised"
+    ? optimisedValue
+    : preference === "balanced"
+      ? selectedRedemption?.value ?? standardValue
+      : selectedRedemption?.value ?? 0;
   return {
     rate: amount > 0 ? Number(((grossValue / amount) * 100).toFixed(2)) : 0,
     grossValue, standardValue, optimisedValue, rewardUnits,
     rewardUnitLabel: earning.currency.unitLabel,
     standardRedemption: earning.currency.standardRedemption,
     optimisedRedemption: earning.currency.optimisedRedemption ?? earning.currency.standardRedemption,
+    selectedRedemption,
+    redemptionValues,
+    bestKnownRedemptionValue: optimisedValue,
   };
+}
+
+function milestoneProgress(
+  cardId: string, model: RewardModel, input: RecommendationInput,
+  category: Exclude<PurchaseCategory, "auto">, context: EvaluationContext,
+) {
+  const ledger = context.ledgers?.[cardId];
+  return (model.milestones ?? []).map((milestone): MilestoneProgress => {
+    const before = milestone.metric === "spend"
+      ? milestone.period === "calendar_month" ? ledger?.monthlyEligibleSpend : ledger?.annualEligibleSpend
+      : ledger?.qualifyingTransactions;
+    const qualifiesCategory = !model.exclusions?.includes(category);
+    const qualifies = qualifiesCategory && (milestone.metric === "spend" || input.amount >= (milestone.minTransactionAmount ?? 0));
+    const increment = qualifies ? milestone.metric === "spend" ? input.amount : 1 : 0;
+    const after = before === undefined ? null : before + increment;
+    return {
+      id: milestone.id,
+      label: milestone.label,
+      period: milestone.period,
+      metric: milestone.metric,
+      threshold: milestone.threshold,
+      before: before ?? null,
+      after,
+      remaining: after === null ? null : Math.max(0, milestone.threshold - after),
+      crossed: before !== undefined && before < milestone.threshold && (after ?? before) >= milestone.threshold,
+      benefitLabel: milestone.benefitLabel,
+      benefitValue: milestone.benefitValue,
+      requiresEnrollment: Boolean(milestone.requiresEnrollment),
+      sourceUrl: milestone.sourceUrl,
+    };
+  });
 }
 
 function asDate(value: string | Date | undefined) {
@@ -268,6 +436,8 @@ export function evaluateCard<T extends RecommendationCard>(
   const channel = input.channel === "auto" ? inferChannel(input.merchant) : input.channel;
   const model = card.rewardModel;
   const valueMode = context.rewardValueMode ?? "standard";
+  const preference = context.redemptionPreference ?? "balanced";
+  const milestones = milestoneProgress(card.id, model, input, category, context);
   const assumptions = [...(model.assumptions ?? [])];
   if (input.category === "auto") assumptions.unshift(`Category auto-detected as ${category}.`);
   if (input.channel === "auto") assumptions.unshift(`Payment route auto-detected as ${channel}.`);
@@ -279,6 +449,7 @@ export function evaluateCard<T extends RecommendationCard>(
       card, category, channel, rate: 0, grossValue: 0, baseValue: 0, offerValue, value: offerValue,
       standardValue: 0, optimisedValue: 0, rewardUnits: null, rewardUnitLabel: null,
       standardRedemption: null, optimisedRedemption: null, valueMode, offersApplied,
+      selectedRedemption: null, redemptionValues: [], bestKnownRedemptionValue: 0, milestoneProgress: milestones,
       capAmount: null, capRemaining: null, capAdjustment: 0, eligible: offerValue > 0,
       ruleLabel: offerValue > 0 ? `Base rewards excluded; active offer still applies` : `${category} is excluded from rewards`,
       confidence: model.confidence, assumptions,
@@ -294,7 +465,7 @@ export function evaluateCard<T extends RecommendationCard>(
     ?? model.channelRates?.[channel] ?? model.categoryRates?.[category];
   const legacyRate = structuredRate ?? legacyMerchantRate ?? rateForLegacyCategory(card, category) ?? card.baseRate;
   const earning: RewardEarning = structuredEarning ?? { kind: "cashback", rate: legacyRate };
-  const earned = evaluateEarning(earning, input.amount, valueMode);
+  const earned = evaluateEarning(earning, input.amount, valueMode, preference, context.ledgers?.[card.id]?.pointsBalance);
   const capAmount = structuredMerchantRule?.capAmount ?? model.defaultCapAmount ?? null;
   const capRemaining = capAmount === null ? null : Math.max(0, capAmount - card.trackedValue);
   const baseValue = capRemaining === null ? earned.grossValue : Math.min(earned.grossValue, capRemaining);
@@ -307,6 +478,8 @@ export function evaluateCard<T extends RecommendationCard>(
     value: baseValue + offerValue, standardValue: earned.standardValue, optimisedValue: earned.optimisedValue,
     rewardUnits: earned.rewardUnits, rewardUnitLabel: earned.rewardUnitLabel,
     standardRedemption: earned.standardRedemption, optimisedRedemption: earned.optimisedRedemption,
+    selectedRedemption: earned.selectedRedemption, redemptionValues: earned.redemptionValues,
+    bestKnownRedemptionValue: earned.bestKnownRedemptionValue, milestoneProgress: milestones,
     valueMode, offersApplied, capAmount, capRemaining, capAdjustment, eligible: true,
     ruleLabel: structuredMerchantRule?.label
       ?? (structuredEarning !== undefined || structuredRate !== undefined ? `${category} / ${channel} rule` : "Base reward rule"),

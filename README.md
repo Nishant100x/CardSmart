@@ -1,4 +1,21 @@
-# CardSmart V10.10 — Rewards Truth Layer
+# CardSmart V10.11 — Redemption Intelligence
+
+## V10.11 decision release (August 2026)
+
+- Replaces the narrow standard-versus-optimised abstraction with named redemption routes: statement credit, vouchers, products, issuer travel portals and partner transfers.
+- Lets users rank the same payment for cash value, shopping value, flights/hotels or the best verified default and remembers that preference.
+- Shows a separate winner for each outcome so a cashback card does not hide a higher-value points route.
+- Displays exact conversion paths, tier thresholds, restrictions, transfer ratios and verified issuer sources without requiring the user to research issuer catalogues.
+- Adds wallet-level points balance, monthly eligible spend, annual eligible spend and qualifying-transaction inputs sourced from the latest statement or card app.
+- Calculates milestone progress without adding unearned milestone value to today's reward; confirmed payments advance known ledgers automatically.
+- Adds normalized, approval-ready `reward_redemption_routes` and `card_milestones` truth tables while keeping published card-version JSON as the runtime snapshot.
+- Includes official redemption/milestone models for HDFC Infinia, Axis Atlas, Axis Magnus and American Express MRCC.
+
+### V10.11 database activation
+
+Run `supabase/redemption-intelligence-v10.11.sql` after `supabase/rewards-truth-layer-v10.10.sql`. It is idempotent and preserves existing profile, wallet and interaction data.
+
+Statement import is deliberately not faked in this release. Until a parser exists, CardSmart stores user-entered statement/card-app numbers with an update timestamp and treats missing values as unknown.
 
 ## V10.10 data release (August 2026)
 
