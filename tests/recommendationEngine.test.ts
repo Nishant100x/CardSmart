@@ -5,6 +5,7 @@ import {
   inferCategory,
   inferChannel,
   rankCards,
+  type CardOffer,
   type RecommendationCard,
   type RewardModel,
 } from "../src/recommendationEngine.ts";
@@ -210,4 +211,108 @@ test("ranker uses rule confidence only as a tie-breaker", () => {
   const verified = card({ id: "verified" }, { confidence: "verified" });
   const ranked = rankCards([indicative, verified], { merchant: "Spend", amount: 1000, category: "other", channel: "online" });
   assert.equal(ranked[0].card.id, "verified");
+});
+
+const hdfcPoints = {
+  kind: "points" as const,
+  units: 5,
+  spendUnit: 150,
+  currency: {
+    code: "HDFC_RP",
+    name: "HDFC Reward Points",
+    unitLabel: "Reward Points",
+    standardValuePerUnit: 0.3,
+    optimisedValuePerUnit: 1,
+    standardRedemption: "Statement credit",
+    optimisedRedemption: "SmartBuy travel",
+  },
+};
+
+test("points cards accrue discrete units before converting to conservative rupee value", () => {
+  const result = evaluateCard(
+    card({}, { defaultEarning: hdfcPoints }),
+    { merchant: "Retail store", amount: 2000, category: "shopping", channel: "offline" },
+  );
+  assert.equal(result.rewardUnits, 66);
+  assert.equal(result.standardValue, 20);
+  assert.equal(result.optimisedValue, 66);
+  assert.equal(result.value, 20);
+  assert.equal(result.standardRedemption, "Statement credit");
+});
+
+test("optimised redemption can be requested without changing the underlying points earned", () => {
+  const result = evaluateCard(
+    card({}, { defaultEarning: hdfcPoints }),
+    { merchant: "Flight", amount: 2000, category: "travel", channel: "online" },
+    { rewardValueMode: "optimised" },
+  );
+  assert.equal(result.rewardUnits, 66);
+  assert.equal(result.value, 66);
+  assert.equal(result.valueMode, "optimised");
+});
+
+function offer(overrides: Partial<CardOffer> = {}): CardOffer {
+  return {
+    id: "offer-1",
+    title: "₹100 instant discount",
+    issuer: "Test Bank",
+    merchantMatches: ["zepto"],
+    minSpend: 999,
+    startsAt: "2026-01-01T00:00:00Z",
+    endsAt: "2026-12-31T23:59:59Z",
+    benefit: { kind: "instant_discount", fixedAmount: 100 },
+    confidence: "verified",
+    sourceUrl: "https://issuer.example/offer",
+    ...overrides,
+  };
+}
+
+test("a current verified offer is added separately from base rewards", () => {
+  const result = evaluateCard(
+    card({ bank: "Test Bank" }),
+    { merchant: "Zepto", amount: 2000, category: "grocery", channel: "online" },
+    { offers: [offer()], asOf: "2026-08-21T00:00:00Z" },
+  );
+  assert.equal(result.baseValue, 20);
+  assert.equal(result.offerValue, 100);
+  assert.equal(result.value, 120);
+  assert.equal(result.offersApplied[0].title, "₹100 instant discount");
+});
+
+test("expired, under-threshold and card-excluded offers never affect ranking", () => {
+  const input = { merchant: "Zepto", amount: 900, category: "grocery" as const, channel: "online" as const };
+  const result = evaluateCard(card({ bank: "Test Bank" }), input, {
+    offers: [
+      offer({ id: "expired", minSpend: 0, endsAt: "2025-12-31T23:59:59Z" }),
+      offer({ id: "under-threshold" }),
+      offer({ id: "excluded", minSpend: 0, excludedCardIds: ["test-card"] }),
+    ],
+    asOf: "2026-08-21T00:00:00Z",
+  });
+  assert.equal(result.offerValue, 0);
+  assert.equal(result.offersApplied.length, 0);
+});
+
+test("only the best non-stackable offer is counted", () => {
+  const result = evaluateCard(
+    card({ bank: "Test Bank" }),
+    { merchant: "Zepto", amount: 2000, category: "grocery", channel: "online" },
+    { offers: [offer(), offer({ id: "offer-2", title: "₹150 off", benefit: { kind: "instant_discount", fixedAmount: 150 } })], asOf: "2026-08-21T00:00:00Z" },
+  );
+  assert.equal(result.offerValue, 150);
+  assert.equal(result.offersApplied.length, 1);
+  assert.equal(result.offersApplied[0].id, "offer-2");
+});
+
+test("an offer can still win when the card's base reward excludes that category", () => {
+  const result = evaluateCard(
+    card({ bank: "Test Bank" }, { exclusions: ["grocery"] }),
+    { merchant: "Zepto", amount: 2000, category: "grocery", channel: "online" },
+    { offers: [offer()], asOf: "2026-08-21T00:00:00Z" },
+  );
+  assert.equal(result.baseValue, 0);
+  assert.equal(result.offerValue, 100);
+  assert.equal(result.value, 100);
+  assert.equal(result.eligible, true);
+  assert.match(result.ruleLabel, /offer still applies/);
 });

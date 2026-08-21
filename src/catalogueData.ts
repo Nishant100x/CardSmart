@@ -1,4 +1,4 @@
-import type { RewardModel } from "./recommendationEngine";
+import type { CardOffer, OfferBenefit, RewardEarning, RewardModel } from "./recommendationEngine";
 
 export type CardData = {
   id: string;
@@ -27,6 +27,7 @@ export type DiscoveryMeta = {
 export type CatalogSnapshot = {
   cards: CardData[];
   discoveryMeta: Record<string, DiscoveryMeta>;
+  offers: CardOffer[];
 };
 
 type JsonObject = Record<string, unknown>;
@@ -76,8 +77,64 @@ function parseRewardModel(value: unknown): RewardModel {
   } as RewardModel;
 }
 
-export function parsePublishedCatalogRows(rows: unknown): CatalogSnapshot {
-  if (!Array.isArray(rows)) return { cards: [], discoveryMeta: {} };
+function parseOfferBenefit(value: unknown): OfferBenefit | null {
+  const raw = objectValue(value);
+  const kind = stringValue(raw.kind);
+  if (kind === "instant_discount" || kind === "cashback") {
+    const benefit: Extract<OfferBenefit, { kind: "instant_discount" | "cashback" }> = { kind };
+    if (typeof raw.rate === "number" && Number.isFinite(raw.rate)) benefit.rate = raw.rate;
+    if (typeof raw.fixedAmount === "number" && Number.isFinite(raw.fixedAmount)) benefit.fixedAmount = raw.fixedAmount;
+    if (typeof raw.maxBenefit === "number" && Number.isFinite(raw.maxBenefit)) benefit.maxBenefit = raw.maxBenefit;
+    return benefit.rate === undefined && benefit.fixedAmount === undefined ? null : benefit;
+  }
+  if (kind === "bonus_points" && objectValue(raw.earning).kind) {
+    return { kind, earning: objectValue(raw.earning) as unknown as RewardEarning };
+  }
+  return null;
+}
+
+export function parsePublishedOfferRows(rows: unknown): CardOffer[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((candidate): CardOffer[] => {
+    const row = objectValue(candidate);
+    const value = objectValue(row.offer_value);
+    const eligibility = objectValue(row.eligibility);
+    const benefit = parseOfferBenefit(value.benefit ?? value);
+    const id = stringValue(row.offer_key, stringValue(row.id));
+    const title = stringValue(row.title);
+    const sourceUrl = stringValue(row.source_url);
+    const merchantMatches = stringList(eligibility.merchantMatches).length
+      ? stringList(eligibility.merchantMatches)
+      : [stringValue(row.merchant)].filter(Boolean);
+    if (!id || !title || !sourceUrl || !merchantMatches.length || !benefit) return [];
+    return [{
+      id,
+      title,
+      issuer: stringValue(row.issuer) || undefined,
+      cardIds: stringList(eligibility.cardIds).length ? stringList(eligibility.cardIds) : (stringValue(row.card_id) ? [stringValue(row.card_id)] : undefined),
+      excludedCardIds: stringList(eligibility.excludedCardIds),
+      merchantMatches,
+      categories: stringList(eligibility.categories) as CardOffer["categories"],
+      channels: stringList(eligibility.channels) as CardOffer["channels"],
+      minSpend: typeof eligibility.minSpend === "number" ? eligibility.minSpend : undefined,
+      startsAt: stringValue(row.starts_at) || undefined,
+      endsAt: stringValue(row.ends_at) || undefined,
+      benefit,
+      stackable: eligibility.stackable === true,
+      couponCode: stringValue(eligibility.couponCode) || undefined,
+      requiresEnrollment: eligibility.requiresEnrollment === true,
+      usageLimit: stringValue(eligibility.usageLimit) || undefined,
+      confidence: CONFIDENCE.has(value.confidence as RewardModel["confidence"])
+        ? value.confidence as RewardModel["confidence"] : "reviewed",
+      sourceUrl,
+      termsUrl: stringValue(row.terms_url) || undefined,
+      verifiedAt: stringValue(row.reviewed_at, stringValue(row.source_checked_at)) || undefined,
+    }];
+  });
+}
+
+export function parsePublishedCatalogRows(rows: unknown, offerRows: unknown = []): CatalogSnapshot {
+  if (!Array.isArray(rows)) return { cards: [], discoveryMeta: {}, offers: parsePublishedOfferRows(offerRows) };
 
   const cards: CardData[] = [];
   const discoveryMeta: Record<string, DiscoveryMeta> = {};
@@ -140,5 +197,5 @@ export function parsePublishedCatalogRows(rows: unknown): CatalogSnapshot {
     }
   });
 
-  return { cards, discoveryMeta };
+  return { cards, discoveryMeta, offers: parsePublishedOfferRows(offerRows) };
 }

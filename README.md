@@ -1,4 +1,19 @@
-# CardSmart V10.9 — Payment-first Journey
+# CardSmart V10.10 — Rewards Truth Layer
+
+## V10.10 data release (August 2026)
+
+- Stops treating every reward as flat cashback: cards can now earn discrete points or miles per spend unit with issuer-specific rounding.
+- Separates conservative ranking value from optimised redemption value, so travel upside is visible without overstating the default winner.
+- Models active issuer offers as an expiring layer above base rewards, with merchant, channel, threshold, card exclusions, coupon, activation and usage-limit rules.
+- Counts only the best non-stackable offer, automatically ignores expired offers and never hides offer value inside the base earn rate.
+- Adds official issuer sources, data version and verification date to the result explanation.
+- Adds audited points models for HDFC Infinia, Axis Atlas, Axis Magnus and American Express MRCC alongside refreshed source metadata for six priority cashback cards.
+- Seeds two fully sourced HSBC offers to prove the live-offer path, including the Live+ exclusion on the Zepto offer.
+- Adds nine database-backed golden validation cases and automated tests for points rounding, dual valuations, offer eligibility, expiry and stacking.
+
+### V10.10 database activation
+
+Run `supabase/rewards-truth-layer-v10.10.sql` once after the catalogue schema and seed. It is idempotent and does not modify user wallets, profiles or interactions.
 
 ## V10.9 experience release (August 2026)
 

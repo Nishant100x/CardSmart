@@ -7,6 +7,7 @@ const repository = readFileSync(new URL("../src/catalogueRepository.ts", import.
 const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 const monitor = readFileSync(new URL("../supabase/functions/card-monitor/index.ts", import.meta.url), "utf8");
 const monitoringSql = readFileSync(new URL("../supabase/card-monitoring-setup.sql", import.meta.url), "utf8");
+const rewardsSql = readFileSync(new URL("../supabase/rewards-truth-layer-v10.10.sql", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -78,4 +79,14 @@ test("monitoring is approval gated and never auto-publishes catalogue changes", 
   assert.doesNotMatch(monitor, /status:\s*"published"/);
   assert.match(monitoringSql, /card_source_snapshots/);
   assert.match(monitoringSql, /begin_card_monitoring_run/);
+});
+
+test("points and offers stay separate and auditable in the payment result", () => {
+  assert.match(source, /rewardUnits/);
+  assert.match(source, /standardRedemption/);
+  assert.match(source, /offersApplied/);
+  assert.match(source, /Issuer source/);
+  assert.match(repository, /from\("card_offers"\)/);
+  assert.match(rewardsSql, /reward_validation_cases/);
+  assert.match(rewardsSql, /hsbc-zepto-2026/);
 });

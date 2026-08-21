@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parsePublishedCatalogRows } from "../src/catalogueData.ts";
+import { parsePublishedCatalogRows, parsePublishedOfferRows } from "../src/catalogueData.ts";
 
 test("published Supabase rows become recommendation cards and discovery metadata", () => {
   const result = parsePublishedCatalogRows([{
@@ -41,6 +41,7 @@ test("published Supabase rows become recommendation cards and discovery metadata
     minMonthlyIncome: 30000,
     goals: ["Simple cashback"],
   });
+  assert.deepEqual(result.offers, []);
 });
 
 test("malformed rows are rejected instead of corrupting the live catalogue", () => {
@@ -49,5 +50,27 @@ test("malformed rows are rejected instead of corrupting the live catalogue", () 
     { id: "missing-name", issuer: "Test Bank", card_versions: [{ reward_model: {} }] },
   ]);
 
-  assert.deepEqual(result, { cards: [], discoveryMeta: {} });
+  assert.deepEqual(result, { cards: [], discoveryMeta: {}, offers: [] });
+});
+
+test("published offers are parsed as a separate, expiring calculation layer", () => {
+  const offers = parsePublishedOfferRows([{
+    id: "offer-row",
+    offer_key: "issuer-merchant-2026",
+    issuer: "Test Bank",
+    merchant: "Zepto",
+    title: "₹100 instant discount",
+    offer_value: { benefit: { kind: "instant_discount", fixedAmount: 100 }, confidence: "verified" },
+    eligibility: { cardIds: ["test-card"], merchantMatches: ["zepto"], minSpend: 999, couponCode: "TEST100" },
+    starts_at: "2026-01-01T00:00:00Z",
+    ends_at: "2026-12-31T23:59:59Z",
+    source_url: "https://issuer.example/offers",
+    terms_url: "https://issuer.example/terms.pdf",
+    reviewed_at: "2026-08-21T00:00:00Z",
+  }]);
+
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].benefit.fixedAmount, 100);
+  assert.equal(offers[0].couponCode, "TEST100");
+  assert.deepEqual(offers[0].cardIds, ["test-card"]);
 });

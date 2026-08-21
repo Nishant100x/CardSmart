@@ -9,6 +9,7 @@ import {
   confidenceLabel,
   evaluateCard,
   rankCards,
+  type CardOffer,
   type PaymentChannel,
   type PurchaseCategory,
   type RewardModel,
@@ -151,10 +152,16 @@ function catalogueCard({
       reviewedOn: rewardModel?.reviewedOn,
       rewardLabel: rewardModel?.rewardLabel ?? "Estimated reward value",
       exclusions: rewardModel?.exclusions,
+      defaultEarning: rewardModel?.defaultEarning,
       merchantRules: rewardModel?.merchantRules,
       categoryRates: rewardModel?.categoryRates,
+      categoryEarnings: rewardModel?.categoryEarnings,
       channelRates: rewardModel?.channelRates,
+      channelEarnings: rewardModel?.channelEarnings,
       defaultCapAmount: rewardModel?.defaultCapAmount,
+      verifiedAt: rewardModel?.verifiedAt,
+      dataVersion: rewardModel?.dataVersion,
+      sourceUrls: rewardModel?.sourceUrls,
       assumptions: rewardModel?.assumptions ?? ["Catalogue rate is indicative and has not yet been fully modelled against issuer terms."],
     },
   };
@@ -179,6 +186,9 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.hdfc.bank.in/credit-cards/swiggy-hdfc-bank-credit-card"],
       rewardLabel: "Cashback",
       exclusions: ["fuel", "rent", "wallet", "government"],
       merchantRules: [
@@ -199,18 +209,21 @@ const FALLBACK_CATALOG: CardData[] = [
     bestFor: ["Online shopping", "Everyday"],
     baseRate: 1,
     rates: { online: 5, dining: 5, travel: 5, grocery: 5 },
-    cap: "₹2,000 online + ₹2,000 offline cashback / statement cycle",
+    cap: "₹4,000 aggregate cashback / statement cycle",
     capUsed: 0,
     trackedValue: 0,
     note: "From 1 Apr 2026: 5% eligible online and 1% eligible offline spends; ₹4,000 aggregate cycle cap.",
     rewardModel: {
       confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.sbicard.com/en/faq/cashback-sbi-card-faq.page", "https://www.sbicard.com/en/customer-notices.page"],
       rewardLabel: "Cashback",
       exclusions: ["utilities", "insurance", "fuel", "rent", "wallet", "education", "government"],
       channelRates: { online: 5, app: 5, offline: 1, upi: 1 },
-      defaultCapAmount: 2000,
-      assumptions: ["The applicable online/offline sub-cap is reduced by the cap usage entered for this card.", "Jewellery, railways, tolls and digital gaming are also excluded; enter the category explicitly when relevant."],
+      defaultCapAmount: 4000,
+      assumptions: ["The ₹4,000 limit is cumulative across eligible online and offline cashback in the statement cycle.", "Jewellery, railways, tolls and digital gaming are also excluded; enter the category explicitly when relevant."],
     },
   },
   {
@@ -228,11 +241,16 @@ const FALLBACK_CATALOG: CardData[] = [
     trackedValue: 0,
     note: "5 EDGE Miles/₹100 on eligible travel and 2/₹100 on other eligible spends; value assumes ₹1 per EDGE Mile.",
     rewardModel: {
-      confidence: "reviewed",
+      confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.axis.bank.in/cards/credit-card/axis-bank-atlas-credit-card", "https://www.axis.bank.in/docs/default-source/default-document-library/credit-cards/terms-and-conditions-of-features-of-axis-bank-atlas-credit-card.pdf"],
       rewardLabel: "EDGE Miles value",
-      categoryRates: { travel: 5 },
-      assumptions: ["Uses ₹1 as the comparison value of one EDGE Mile.", "Travel acceleration is limited to eligible airlines, hotels and Travel EDGE; exact MCC recognition can vary."],
+      exclusions: ["fuel", "rent", "wallet", "government", "insurance", "utilities"],
+      defaultEarning: { kind: "points", units: 2, spendUnit: 100, currency: { code: "AXIS_EDGE_MILE", name: "Axis EDGE Miles", unitLabel: "EDGE Miles", standardValuePerUnit: 1, optimisedValuePerUnit: 1, standardRedemption: "Axis redemption value", optimisedRedemption: "Transfer at up to 1 EDGE Mile : 2 partner miles; realised travel value varies" } },
+      categoryEarnings: { travel: { kind: "points", units: 5, spendUnit: 100, currency: { code: "AXIS_EDGE_MILE", name: "Axis EDGE Miles", unitLabel: "EDGE Miles", standardValuePerUnit: 1, optimisedValuePerUnit: 1, standardRedemption: "Axis redemption value", optimisedRedemption: "Transfer at up to 1 EDGE Mile : 2 partner miles; realised travel value varies" } } },
+      assumptions: ["Travel acceleration is limited to Travel EDGE, direct airlines and direct hotel merchants.", "The ₹2 lakh monthly accelerated-travel threshold is not inferred without statement-cycle spend."],
     },
   },
   {
@@ -253,6 +271,9 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.hdfc.bank.in/credit-cards/millennia-credit-card"],
       rewardLabel: "CashPoints value",
       exclusions: ["fuel", "rent", "wallet", "government"],
       merchantRules: [{ matches: ["amazon", "bookmyshow", "cult.fit", "flipkart", "myntra", "sony liv", "swiggy", "tata cliq", "uber", "zomato"], rate: 5, capAmount: 1000, label: "5% Millennia partner cashback" }],
@@ -278,6 +299,9 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "reviewed",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.icicibank.com/personal-banking/cards/credit-card/amazon-pay-credit-card"],
       rewardLabel: "Amazon Pay balance",
       merchantRules: [{ matches: ["amazon"], rate: 5, channels: ["online", "app"], categories: ["shopping", "travel"], label: "Amazon Prime purchase reward" }],
       assumptions: ["Amazon rate assumes an active Prime membership; choose another card if the user is non-Prime and the 3% rate changes the result.", "Amazon Pay partner merchants may earn 2% when paid through Amazon Pay."],
@@ -300,6 +324,9 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.hsbc.co.in/credit-cards/products/live-plus/"],
       rewardLabel: "Cashback",
       exclusions: ["utilities"],
       merchantRules: [{ matches: ["*"], rate: 10, categories: ["dining", "grocery"], capAmount: 1000, label: "10% dining / food delivery / grocery cashback" }],
@@ -321,10 +348,14 @@ const FALLBACK_CATALOG: CardData[] = [
     trackedValue: 0,
     note: "5 Reward Points per ₹150 eligible retail spend. Value shown assumes ₹1 per point through eligible travel redemption.",
     rewardModel: {
-      confidence: "reviewed",
+      confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.hdfc.bank.in/credit-cards/infinia-credit-card", "https://offers.smartbuy.hdfc.bank.in/v2/infinia/home"],
       rewardLabel: "Reward Point value",
-      assumptions: ["Uses ₹1 per Reward Point; statement credit or other redemptions can be worth less.", "SmartBuy acceleration is not applied unless a specific verified booking route is modelled."],
+      defaultEarning: { kind: "points", units: 5, spendUnit: 150, currency: { code: "HDFC_RP", name: "HDFC Reward Points", unitLabel: "Reward Points", standardValuePerUnit: 0.3, optimisedValuePerUnit: 1, standardRedemption: "Statement credit", optimisedRedemption: "Flights and hotels through SmartBuy" } },
+      assumptions: ["Ranking uses ₹0.30 per point, the conservative statement-credit value.", "The up-to-₹1 travel value is shown separately and is not assumed in the winner ranking.", "SmartBuy acceleration is not applied unless the payment route is explicitly modelled."],
     },
   },
   {
@@ -345,6 +376,9 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "verified",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.axis.bank.in/cards/credit-card/axis-bank-ace-credit-card"],
       rewardLabel: "Cashback",
       exclusions: ["fuel", "rent", "wallet", "education", "insurance", "government"],
       merchantRules: [
@@ -371,9 +405,13 @@ const FALLBACK_CATALOG: CardData[] = [
     rewardModel: {
       confidence: "reviewed",
       reviewedOn: "August 2026",
+      verifiedAt: "2026-08-21",
+      dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.americanexpress.com/in/credit-cards/membership-rewards-card/"],
       rewardLabel: "Membership Rewards value",
       exclusions: ["fuel", "insurance", "utilities"],
-      assumptions: ["Uses ₹0.50 per Membership Rewards point.", "The 1,000-point bonus for four ₹1,500+ transactions is not included because monthly qualifying transaction count is not tracked."],
+      defaultEarning: { kind: "points", units: 1, spendUnit: 50, currency: { code: "AMEX_MR", name: "Membership Rewards", unitLabel: "MR Points", standardValuePerUnit: 0.25, optimisedValuePerUnit: 0.5, standardRedemption: "Conservative cash-equivalent value", optimisedRedemption: "Selected Gold Collection redemptions" } },
+      assumptions: ["Ranking uses a conservative ₹0.25 per Membership Rewards point because realised value depends on redemption choice.", "The higher illustrative value is shown separately.", "The 1,000-point bonus for four ₹1,500+ transactions is not included because monthly qualifying transaction count is not tracked."],
     },
   },
   catalogueCard({ id: "hdfc-regalia-gold", bank: "HDFC Bank", name: "Regalia Gold", bestFor: ["Travel", "Lounge"], baseRate: 1.3, rates: { travel: 2.6 } }),
@@ -405,7 +443,19 @@ const FALLBACK_CATALOG: CardData[] = [
   catalogueCard({ id: "sbi-bpcl", bank: "SBI Card", name: "BPCL", network: "RuPay", bestFor: ["BPCL fuel", "Everyday"], baseRate: 0.25 }),
   catalogueCard({ id: "sbi-irctc-premier", bank: "SBI Card", name: "IRCTC Premier", network: "RuPay", bestFor: ["Rail travel", "IRCTC"], baseRate: 0.4, rates: { travel: 1.5 } }),
   catalogueCard({ id: "sbi-miles", bank: "SBI Card", name: "MILES", bestFor: ["Flights", "Travel rewards"], baseRate: 0.5, rates: { travel: 1 } }),
-  catalogueCard({ id: "axis-magnus", bank: "Axis Bank", name: "Magnus", bestFor: ["Premium travel", "Milestones"], baseRate: 1.2, rates: { travel: 2.4 } }),
+  catalogueCard({
+    id: "axis-magnus", bank: "Axis Bank", name: "Magnus", bestFor: ["Premium travel", "Milestones"], baseRate: 1.2,
+    cap: "Higher earn begins after ₹1.5 lakh eligible monthly spend",
+    note: "12 EDGE Reward Points per ₹200 on eligible spends up to ₹1.5 lakh in a calendar month. Travel EDGE earns 5X the base rate.",
+    rewardModel: {
+      confidence: "verified", reviewedOn: "August 2026", verifiedAt: "2026-08-21", dataVersion: "2026.08.21",
+      sourceUrls: ["https://www.axis.bank.in/cards/credit-card/axis-bank-magnus-credit-card"],
+      rewardLabel: "EDGE Reward Points value",
+      defaultEarning: { kind: "points", units: 12, spendUnit: 200, currency: { code: "AXIS_EDGE_RP", name: "Axis EDGE Reward Points", unitLabel: "EDGE Points", standardValuePerUnit: 0.2, optimisedValuePerUnit: 0.2, standardRedemption: "Axis catalogue value", optimisedRedemption: "Transfer at 5 EDGE Points : 2 partner miles; realised travel value varies" } },
+      merchantRules: [{ matches: ["travel edge"], channels: ["app", "online"], earning: { kind: "points", units: 60, spendUnit: 200, currency: { code: "AXIS_EDGE_RP", name: "Axis EDGE Reward Points", unitLabel: "EDGE Points", standardValuePerUnit: 0.2, optimisedValuePerUnit: 0.2, standardRedemption: "Axis catalogue value", optimisedRedemption: "Transfer at 5 EDGE Points : 2 partner miles; realised travel value varies" } }, label: "5X Travel EDGE reward" }],
+      assumptions: ["The higher 35-points-per-₹200 band above ₹1.5 lakh monthly spend is excluded until statement-cycle spend is known."],
+    },
+  }),
   catalogueCard({ id: "axis-burgundy-private", bank: "Axis Bank", name: "Burgundy Private", bestFor: ["Premium rewards", "Travel"], baseRate: 2, rates: { travel: 4 } }),
   catalogueCard({
     id: "axis-airtel", bank: "Axis Bank", name: "Airtel", network: "Mastercard", bestFor: ["Airtel bills", "Utilities"], baseRate: 1,
@@ -515,6 +565,45 @@ const FALLBACK_DISCOVERY_META: Record<string, DiscoveryMeta> = {
   "amazon-icici": { annualFee: 0, minMonthlyIncome: 30000, goals: ["Simple cashback", "Low fees"] },
   "axis-ace": { annualFee: 499, minMonthlyIncome: 40000, goals: ["Simple cashback", "Low fees"] },
 };
+
+const FALLBACK_OFFERS: CardOffer[] = [
+  {
+    id: "hsbc-lakme-2026",
+    title: "₹1,100 off at Lakme Salon",
+    issuer: "HSBC",
+    merchantMatches: ["lakme"],
+    channels: ["offline"],
+    minSpend: 3000,
+    startsAt: "2026-01-01T00:00:00+05:30",
+    endsAt: "2026-12-31T23:59:59+05:30",
+    benefit: { kind: "instant_discount", fixedAmount: 1100 },
+    couponCode: "Unique voucher code required",
+    requiresEnrollment: true,
+    usageLimit: "Once per cardholder per calendar month",
+    confidence: "verified",
+    sourceUrl: "https://www.hsbc.co.in/credit-cards/offers/",
+    termsUrl: "https://www.hsbc.co.in/content/dam/hsbc/in/documents/credit-cards/offers/lakme-salon-tnc.pdf",
+    verifiedAt: "2026-08-21",
+  },
+  {
+    id: "hsbc-zepto-2026",
+    title: "₹100 instant discount on Zepto",
+    issuer: "HSBC",
+    excludedCardIds: ["hsbc-liveplus"],
+    merchantMatches: ["zepto"],
+    channels: ["online", "app"],
+    minSpend: 999,
+    startsAt: "2026-05-01T00:00:00+05:30",
+    endsAt: "2026-12-31T23:59:59+05:30",
+    benefit: { kind: "instant_discount", fixedAmount: 100 },
+    couponCode: "ZEPHSBC",
+    usageLimit: "Once per card per month; selected products only",
+    confidence: "verified",
+    sourceUrl: "https://www.hsbc.co.in/credit-cards/offers/",
+    termsUrl: "https://www.hsbc.co.in/content/dam/hsbc/in/documents/credit-cards/offers/zepto-offer-tnc.pdf",
+    verifiedAt: "2026-08-21",
+  },
+];
 
 const DEFAULT_WALLET: string[] = [];
 
@@ -683,6 +772,7 @@ export default function Home() {
   const [view, setView] = useState<"home" | "result" | "wallet" | "explore" | "activity" | "profile">("home");
   const [catalog, setCatalog] = useState<CardData[]>(FALLBACK_CATALOG);
   const [discoveryMeta, setDiscoveryMeta] = useState<Record<string, DiscoveryMeta>>(FALLBACK_DISCOVERY_META);
+  const [offers, setOffers] = useState<CardOffer[]>(FALLBACK_OFFERS);
   const [catalogReady, setCatalogReady] = useState(!isSupabaseConfigured);
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
@@ -753,6 +843,7 @@ export default function Home() {
           - (fallbackOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)
         )));
         setDiscoveryMeta(snapshot.discoveryMeta);
+        setOffers(snapshot.offers.length ? snapshot.offers : FALLBACK_OFFERS);
       } catch {
         // The bundled snapshot keeps the product usable during a transient
         // catalogue outage. Supabase remains the primary source on every load.
@@ -834,8 +925,8 @@ export default function Home() {
       amount: numericAmount,
       category: purchaseCategory,
       channel: paymentChannel,
-    }),
-    [merchant, numericAmount, paymentChannel, purchaseCategory, walletCards]
+    }, { offers, rewardValueMode: "standard" }),
+    [merchant, numericAmount, offers, paymentChannel, purchaseCategory, walletCards]
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
@@ -1889,7 +1980,9 @@ export default function Home() {
               <span className="transaction-pill"><span>{merchant}</span><strong>₹{numericAmount.toLocaleString("en-IN")}</strong></span>
               <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No reward on this payment"}</span>
               <h1>{winner.eligible ? <>Use <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards won’t earn rewards here"}</h1>
-              <p>{winner.eligible ? `About ₹${winner.value.toLocaleString("en-IN")} back on this payment${runnerUp && winner.value > runnerUp.value ? `, ₹${(winner.value - runnerUp.value).toLocaleString("en-IN")} more than your next best card` : ""}.` : "This type of payment is excluded across the cards currently in your wallet."}</p>
+              <p>{winner.eligible
+                ? `${winner.rewardUnits !== null ? `Earn about ${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel}, worth ₹${winner.baseValue.toLocaleString("en-IN")} at the standard redemption` : `About ₹${winner.baseValue.toLocaleString("en-IN")} in base rewards`}${winner.offerValue > 0 ? ` plus ₹${winner.offerValue.toLocaleString("en-IN")} from an active offer` : ""}${runnerUp && winner.value > runnerUp.value ? `, ₹${(winner.value - runnerUp.value).toLocaleString("en-IN")} more than your next best card` : ""}.`
+                : "This type of payment is excluded across the cards currently in your wallet."}</p>
             </div>
 
             <section className="winner-panel">
@@ -1898,9 +1991,19 @@ export default function Home() {
                 <CardVisual card={winner.card} />
               </div>
               <div className="reward-summary">
-                <span className="summary-label">Expected reward</span>
+                <span className="summary-label">Expected total value</span>
                 <div className="reward-value">₹{winner.value.toLocaleString("en-IN")}</div>
-                <div className="reward-rate">{winner.eligible ? `${winner.rate}% back on this payment` : winner.ruleLabel}</div>
+                <div className="reward-rate">{winner.eligible
+                  ? winner.rewardUnits !== null
+                    ? `${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel} · ${winner.standardRedemption}`
+                    : `${winner.rate}% base return on this payment`
+                  : winner.ruleLabel}</div>
+                {winner.rewardUnits !== null && winner.optimisedValue > winner.standardValue && (
+                  <div className="points-upside"><Icon name="spark" size={15}/><span>Worth up to <strong>₹{winner.optimisedValue.toLocaleString("en-IN")}</strong> via {winner.optimisedRedemption}</span></div>
+                )}
+                {winner.offersApplied.map((offer) => (
+                  <div className="active-offer" key={offer.id}><Icon name="gift" size={16}/><div><span>Active offer included</span><strong>{offer.title} · +₹{offer.value.toLocaleString("en-IN")}</strong>{offer.couponCode && <small>Use: {offer.couponCode}</small>}{offer.usageLimit && <small>{offer.usageLimit}</small>}</div></div>
+                ))}
                 {runnerUp && (
                   <div className="extra-value"><Icon name="spark" size={16} />
                     {winner.value > runnerUp.value
@@ -1915,12 +2018,17 @@ export default function Home() {
                   <span className={`rule-confidence rule-confidence--${winner.confidence}`}>{confidenceLabel(winner.confidence)}</span>
                   {winner.eligible ? (
                     <>
-                      <div className="reward-math"><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>×</span><strong>{winner.rate}%</strong><span>=</span><strong className="green-text">₹{winner.grossValue.toLocaleString("en-IN")}</strong></div>
-                      {winner.capAdjustment > 0 && <div className="cap-adjustment"><span>Adjusted for rewards already earned</span><strong>−₹{winner.capAdjustment.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>}
+                      {winner.rewardUnits !== null
+                        ? <div className="reward-math reward-math--points"><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>earns</span><strong>{winner.rewardUnits.toLocaleString("en-IN")} {winner.rewardUnitLabel}</strong><span>=</span><strong className="green-text">₹{winner.grossValue.toLocaleString("en-IN")}</strong></div>
+                        : <div className="reward-math"><strong>₹{numericAmount.toLocaleString("en-IN")}</strong><span>×</span><strong>{winner.rate}%</strong><span>=</span><strong className="green-text">₹{winner.grossValue.toLocaleString("en-IN")}</strong></div>}
+                      {winner.capAdjustment > 0 && <div className="cap-adjustment"><span>Adjusted for rewards already earned</span><strong>−₹{winner.capAdjustment.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.baseValue.toLocaleString("en-IN")}</strong></div>}
+                      {winner.offerValue > 0 && <div className="cap-adjustment offer-adjustment"><span>Active offer value</span><strong>+₹{winner.offerValue.toLocaleString("en-IN")}</strong><span>=</span><strong className="green-text">₹{winner.value.toLocaleString("en-IN")}</strong></div>}
                     </>
                   ) : <div className="excluded-calculation"><Icon name="info" size={18}/><strong>0% because this category is excluded</strong></div>}
                   <p>{winner.card.note}</p>
                   {winner.assumptions.length > 0 && <ul>{winner.assumptions.map((assumption) => <li key={assumption}>{assumption}</li>)}</ul>}
+                  {(winner.card.rewardModel.verifiedAt || winner.card.rewardModel.sourceUrls?.length) && <div className="truth-meta"><span>Data version {winner.card.rewardModel.dataVersion ?? "current"}{winner.card.rewardModel.verifiedAt ? ` · checked ${winner.card.rewardModel.verifiedAt}` : ""}</span>{winner.card.rewardModel.sourceUrls?.map((url, index) => <a href={url} target="_blank" rel="noreferrer" key={url}>Issuer source {index + 1}</a>)}</div>}
+                  {winner.offersApplied.map((offer) => <div className="truth-meta truth-meta--offer" key={`${offer.id}-source`}><span>{offer.requiresEnrollment ? "Activation or code required · " : ""}Offer terms can change</span><a href={offer.termsUrl ?? offer.sourceUrl} target="_blank" rel="noreferrer">Offer terms</a></div>)}
                 </div>
               </details>
             </section>
@@ -1935,7 +2043,7 @@ export default function Home() {
                   <div className={`comparison-row ${index === 0 ? "comparison-row--winner" : ""}`} key={item.card.id}>
                     <span className="rank">{index + 1}</span>
                     <span className="card-swatch" style={{ background: `linear-gradient(135deg, ${item.card.colors[0]}, ${item.card.colors[1]})` }} />
-                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.eligible ? `${item.rate}% · ${confidenceLabel(item.confidence)}` : item.ruleLabel}{item.capAdjustment > 0 ? ` · ₹${item.capAdjustment.toLocaleString("en-IN")} capped` : ""}</span></div>
+                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.eligible ? `${item.rewardUnits !== null ? `${item.rewardUnits.toLocaleString("en-IN")} ${item.rewardUnitLabel}` : `${item.rate}%`} · ${confidenceLabel(item.confidence)}` : item.ruleLabel}{item.offerValue > 0 ? ` · ₹${item.offerValue.toLocaleString("en-IN")} offer` : ""}{item.capAdjustment > 0 ? ` · ₹${item.capAdjustment.toLocaleString("en-IN")} capped` : ""}</span></div>
                     <div className="comparison-value"><strong>₹{item.value.toLocaleString("en-IN")}</strong>{index === 0 && <span>{item.eligible ? "Best" : "Excluded"}</span>}</div>
                   </div>
                 ))}
