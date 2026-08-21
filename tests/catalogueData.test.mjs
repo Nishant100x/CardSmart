@@ -22,6 +22,8 @@ test("published Supabase rows become recommendation cards and discovery metadata
           confidence: "verified",
           rewardLabel: "Cashback",
           defaultCapAmount: 1000,
+          defaultEarning: { kind: "points", units: 1, spendUnit: 100, currency: { code: "TEST", name: "Test Points", unitLabel: "Points", standardValuePerUnit: 0.25, standardRedemption: "Cash", redemptionOptions: [{ id: "voucher", type: "voucher", label: "Voucher", valuePerUnit: 0.5 }] } },
+          milestones: [{ id: "monthly", label: "Monthly", period: "calendar_month", metric: "spend", threshold: 20000, benefitLabel: "Bonus" }],
           assumptions: ["Eligible transactions only."],
         },
       },
@@ -36,6 +38,8 @@ test("published Supabase rows become recommendation cards and discovery metadata
   assert.equal(result.cards[0].id, "test-card");
   assert.equal(result.cards[0].rates.online, 5);
   assert.equal(result.cards[0].rewardModel.confidence, "verified");
+  assert.equal(result.cards[0].rewardModel.defaultEarning.currency.redemptionOptions[0].label, "Voucher");
+  assert.equal(result.cards[0].rewardModel.milestones[0].threshold, 20000);
   assert.deepEqual(result.discoveryMeta["test-card"], {
     annualFee: 999,
     minMonthlyIncome: 30000,
