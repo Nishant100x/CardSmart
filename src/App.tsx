@@ -6,12 +6,18 @@ import { isSupabaseConfigured, supabase } from "./supabase";
 import { loadPublishedCatalog } from "./catalogueRepository";
 import type { CardData, DiscoveryMeta } from "./catalogueData";
 import {
+  analysePaymentIntent,
   confidenceLabel,
   evaluateCard,
+  merchantClarificationCandidates,
   rankCards,
   type CardOffer,
   type PaymentChannel,
   type PurchaseCategory,
+  type RecommendationResult,
+  type RedemptionPreference,
+  type RewardCurrency,
+  type RewardLedger,
   type RewardModel,
 } from "./recommendationEngine";
 import {
@@ -62,6 +68,11 @@ type WalletRow = {
   cap_usage_value: number | string | null;
   cap_usage_source: "manual" | "tracked" | null;
   cap_usage_updated_at: string | null;
+  points_balance: number | string | null;
+  monthly_eligible_spend: number | string | null;
+  annual_eligible_spend: number | string | null;
+  qualifying_transactions: number | string | null;
+  ledger_updated_at: string | null;
   created_at: string;
 };
 
@@ -75,6 +86,7 @@ type RecommendationProfile = {
   creditScoreBand: string;
   primaryGoal: string;
   feeComfort: string;
+  redemptionPreference: RedemptionPreference;
 };
 
 type SpendProfile = {
@@ -84,6 +96,13 @@ type SpendProfile = {
   grocery: string;
   bills: string;
   fuel: string;
+};
+
+type LedgerDraft = {
+  pointsBalance: string;
+  monthlyEligibleSpend: string;
+  annualEligibleSpend: string;
+  qualifyingTransactions: string;
 };
 
 type ProfileRow = {
@@ -96,6 +115,7 @@ type ProfileRow = {
   annual_fee_comfort: string | null;
   age_range: string | null;
   credit_score_range: string | null;
+  redemption_preference: RedemptionPreference | null;
   monthly_spends: Record<string, number | string> | null;
 };
 
@@ -159,6 +179,7 @@ function catalogueCard({
       channelRates: rewardModel?.channelRates,
       channelEarnings: rewardModel?.channelEarnings,
       defaultCapAmount: rewardModel?.defaultCapAmount,
+      milestones: rewardModel?.milestones,
       verifiedAt: rewardModel?.verifiedAt,
       dataVersion: rewardModel?.dataVersion,
       sourceUrls: rewardModel?.sourceUrls,
@@ -166,6 +187,50 @@ function catalogueCard({
     },
   };
 }
+
+const HDFC_INFINIA_CURRENCY: RewardCurrency = {
+  code: "HDFC_RP", name: "HDFC Reward Points", unitLabel: "Reward Points",
+  standardValuePerUnit: 0.3, optimisedValuePerUnit: 1,
+  standardRedemption: "Statement credit", optimisedRedemption: "Eligible ₹1 redemption routes",
+  redemptionOptions: [
+    { id: "hdfc-cash", type: "cash", label: "Statement credit", valuePerUnit: 0.3, confidence: "verified", conditions: ["Up to 50,000 points per month against statement balance"] },
+    { id: "hdfc-vouchers", type: "voucher", label: "Products and vouchers", valuePerUnit: 0.5, confidence: "verified", conditions: ["Issuer catalogue value varies by item"] },
+    { id: "hdfc-apple-tanishq", type: "product", label: "Apple products or Tanishq vouchers via SmartBuy", valuePerUnit: 1, confidence: "verified", conditions: ["Points can cover up to 70% of the bill"] },
+    { id: "hdfc-travel", type: "travel", label: "Flights and hotels through SmartBuy", valuePerUnit: 1, confidence: "verified", conditions: ["Monthly redemption caps apply"] },
+    { id: "hdfc-transfer", type: "transfer", label: "Airmile conversion", conversionUnitsPerPoint: 1, conversionUnitLabel: "airmiles", confidence: "verified", conditions: ["Up to 1 airmile per point; realised value depends on partner"] },
+  ],
+};
+
+const AXIS_ATLAS_CURRENCY: RewardCurrency = {
+  code: "AXIS_EDGE_MILE", name: "Axis EDGE Miles", unitLabel: "EDGE Miles",
+  standardValuePerUnit: 1, optimisedValuePerUnit: 1,
+  standardRedemption: "Travel EDGE booking value", optimisedRedemption: "Travel EDGE or partner transfer",
+  redemptionOptions: [
+    { id: "atlas-travel", type: "travel", label: "Flights, hotels and experiences through Travel EDGE", valuePerUnit: 1, confidence: "verified", conditions: ["₹99 redemption fee applies"] },
+    { id: "atlas-transfer", type: "transfer", label: "Transfer to eligible airline and hotel partners", conversionUnitsPerPoint: 2, conversionUnitLabel: "partner miles", confidence: "verified", conditions: ["1 EDGE Mile converts to 2 partner miles", "₹199 transfer fee and annual partner-group limits apply"] },
+  ],
+};
+
+const AXIS_MAGNUS_CURRENCY: RewardCurrency = {
+  code: "AXIS_EDGE_RP", name: "Axis EDGE Reward Points", unitLabel: "EDGE Points",
+  standardValuePerUnit: 0.2, optimisedValuePerUnit: 0.2,
+  standardRedemption: "Axis catalogue value", optimisedRedemption: "Axis catalogue or partner transfer",
+  redemptionOptions: [
+    { id: "magnus-catalogue", type: "voucher", label: "Axis EDGE catalogue", valuePerUnit: 0.2, confidence: "verified" },
+    { id: "magnus-transfer", type: "transfer", label: "Transfer to eligible airline and hotel partners", conversionUnitsPerPoint: 0.4, conversionUnitLabel: "partner miles", confidence: "verified", conditions: ["5 EDGE Points convert to 2 partner miles for standard Magnus", "Partner-group limits and transfer fee apply"] },
+  ],
+};
+
+const AMEX_MR_CURRENCY: RewardCurrency = {
+  code: "AMEX_MR", name: "Membership Rewards", unitLabel: "MR Points",
+  standardValuePerUnit: 0.25, optimisedValuePerUnit: 0.583,
+  standardRedemption: "Conservative cash-equivalent value", optimisedRedemption: "Gold Collection voucher tiers",
+  redemptionOptions: [
+    { id: "amex-cash", type: "cash", label: "Conservative cash-equivalent value", valuePerUnit: 0.25, confidence: "reviewed" },
+    { id: "amex-gold-18", type: "voucher", label: "18 Karat Gold Collection", tiers: [{ units: 18000, value: 9000, label: "Taj voucher up to ₹9,000" }, { units: 18000, value: 7000, label: "Selected shopping vouchers up to ₹7,000" }], confidence: "verified", conditions: ["Requires 18,000 points; choose one available reward"] },
+    { id: "amex-gold-24", type: "voucher", label: "24 Karat Gold Collection", tiers: [{ units: 24000, value: 14000, label: "Taj voucher up to ₹14,000" }, { units: 24000, value: 10000, label: "Shoppers Stop voucher worth ₹10,000" }, { units: 24000, value: 8000, label: "Amazon, Flipkart or Reliance Digital voucher worth ₹8,000" }], confidence: "verified", conditions: ["Requires 24,000 points; choose one available reward"] },
+  ],
+};
 
 const FALLBACK_CATALOG: CardData[] = [
   {
@@ -248,8 +313,13 @@ const FALLBACK_CATALOG: CardData[] = [
       sourceUrls: ["https://www.axis.bank.in/cards/credit-card/axis-bank-atlas-credit-card", "https://www.axis.bank.in/docs/default-source/default-document-library/credit-cards/terms-and-conditions-of-features-of-axis-bank-atlas-credit-card.pdf"],
       rewardLabel: "EDGE Miles value",
       exclusions: ["fuel", "rent", "wallet", "government", "insurance", "utilities"],
-      defaultEarning: { kind: "points", units: 2, spendUnit: 100, currency: { code: "AXIS_EDGE_MILE", name: "Axis EDGE Miles", unitLabel: "EDGE Miles", standardValuePerUnit: 1, optimisedValuePerUnit: 1, standardRedemption: "Axis redemption value", optimisedRedemption: "Transfer at up to 1 EDGE Mile : 2 partner miles; realised travel value varies" } },
-      categoryEarnings: { travel: { kind: "points", units: 5, spendUnit: 100, currency: { code: "AXIS_EDGE_MILE", name: "Axis EDGE Miles", unitLabel: "EDGE Miles", standardValuePerUnit: 1, optimisedValuePerUnit: 1, standardRedemption: "Axis redemption value", optimisedRedemption: "Transfer at up to 1 EDGE Mile : 2 partner miles; realised travel value varies" } } },
+      defaultEarning: { kind: "points", units: 2, spendUnit: 100, currency: AXIS_ATLAS_CURRENCY },
+      categoryEarnings: { travel: { kind: "points", units: 5, spendUnit: 100, currency: AXIS_ATLAS_CURRENCY } },
+      milestones: [
+        { id: "atlas-3l", label: "₹3 lakh milestone", period: "anniversary_year", metric: "spend", threshold: 300000, benefitLabel: "2,500 EDGE Miles", benefitValue: 2500, sourceUrl: "https://www.axis.bank.in/cards/credit-card/axis-bank-atlas-credit-card" },
+        { id: "atlas-7_5l", label: "₹7.5 lakh milestone", period: "anniversary_year", metric: "spend", threshold: 750000, benefitLabel: "Additional 2,500 EDGE Miles and Gold tier", benefitValue: 2500, sourceUrl: "https://www.axis.bank.in/cards/credit-card/axis-bank-atlas-credit-card" },
+        { id: "atlas-15l", label: "₹15 lakh milestone", period: "anniversary_year", metric: "spend", threshold: 1500000, benefitLabel: "Additional 5,000 EDGE Miles and Platinum tier", benefitValue: 5000, sourceUrl: "https://www.axis.bank.in/cards/credit-card/axis-bank-atlas-credit-card" },
+      ],
       assumptions: ["Travel acceleration is limited to Travel EDGE, direct airlines and direct hotel merchants.", "The ₹2 lakh monthly accelerated-travel threshold is not inferred without statement-cycle spend."],
     },
   },
@@ -354,7 +424,9 @@ const FALLBACK_CATALOG: CardData[] = [
       dataVersion: "2026.08.21",
       sourceUrls: ["https://www.hdfc.bank.in/credit-cards/infinia-credit-card", "https://offers.smartbuy.hdfc.bank.in/v2/infinia/home"],
       rewardLabel: "Reward Point value",
-      defaultEarning: { kind: "points", units: 5, spendUnit: 150, currency: { code: "HDFC_RP", name: "HDFC Reward Points", unitLabel: "Reward Points", standardValuePerUnit: 0.3, optimisedValuePerUnit: 1, standardRedemption: "Statement credit", optimisedRedemption: "Flights and hotels through SmartBuy" } },
+      exclusions: ["fuel"],
+      defaultEarning: { kind: "points", units: 5, spendUnit: 150, currency: HDFC_INFINIA_CURRENCY },
+      milestones: [{ id: "infinia-fee-waiver", label: "Renewal fee waiver", period: "anniversary_year", metric: "spend", threshold: 1000000, benefitLabel: "₹12,500 renewal fee waived", benefitValue: 12500, sourceUrl: "https://www.hdfc.bank.in/credit-cards/infinia-credit-card" }],
       assumptions: ["Ranking uses ₹0.30 per point, the conservative statement-credit value.", "The up-to-₹1 travel value is shown separately and is not assumed in the winner ranking.", "SmartBuy acceleration is not applied unless the payment route is explicitly modelled."],
     },
   },
@@ -410,7 +482,13 @@ const FALLBACK_CATALOG: CardData[] = [
       sourceUrls: ["https://www.americanexpress.com/in/credit-cards/membership-rewards-card/"],
       rewardLabel: "Membership Rewards value",
       exclusions: ["fuel", "insurance", "utilities"],
-      defaultEarning: { kind: "points", units: 1, spendUnit: 50, currency: { code: "AMEX_MR", name: "Membership Rewards", unitLabel: "MR Points", standardValuePerUnit: 0.25, optimisedValuePerUnit: 0.5, standardRedemption: "Conservative cash-equivalent value", optimisedRedemption: "Selected Gold Collection redemptions" } },
+      defaultEarning: { kind: "points", units: 1, spendUnit: 50, currency: AMEX_MR_CURRENCY },
+      milestones: [
+        { id: "mrcc-4x1500", label: "Four qualifying transactions", period: "calendar_month", metric: "transactions", threshold: 4, minTransactionAmount: 1500, benefitLabel: "1,000 bonus MR Points", benefitValue: 250, sourceUrl: "https://www.americanexpress.com/in/credit-cards/membership-rewards-card/" },
+        { id: "mrcc-20k", label: "₹20,000 monthly spend", period: "calendar_month", metric: "spend", threshold: 20000, benefitLabel: "Additional 1,000 MR Points", benefitValue: 250, requiresEnrollment: true, sourceUrl: "https://www.americanexpress.com/in/credit-cards/membership-rewards-card/" },
+        { id: "mrcc-fee-half", label: "50% renewal fee waiver", period: "anniversary_year", metric: "spend", threshold: 90000, benefitLabel: "50% renewal fee waived", sourceUrl: "https://www.americanexpress.com/in/credit-cards/membership-rewards-card/" },
+        { id: "mrcc-fee-full", label: "Full renewal fee waiver", period: "anniversary_year", metric: "spend", threshold: 150000, benefitLabel: "100% renewal fee waived", benefitValue: 4500, sourceUrl: "https://www.americanexpress.com/in/credit-cards/membership-rewards-card/" },
+      ],
       assumptions: ["Ranking uses a conservative ₹0.25 per Membership Rewards point because realised value depends on redemption choice.", "The higher illustrative value is shown separately.", "The 1,000-point bonus for four ₹1,500+ transactions is not included because monthly qualifying transaction count is not tracked."],
     },
   },
@@ -451,8 +529,9 @@ const FALLBACK_CATALOG: CardData[] = [
       confidence: "verified", reviewedOn: "August 2026", verifiedAt: "2026-08-21", dataVersion: "2026.08.21",
       sourceUrls: ["https://www.axis.bank.in/cards/credit-card/axis-bank-magnus-credit-card"],
       rewardLabel: "EDGE Reward Points value",
-      defaultEarning: { kind: "points", units: 12, spendUnit: 200, currency: { code: "AXIS_EDGE_RP", name: "Axis EDGE Reward Points", unitLabel: "EDGE Points", standardValuePerUnit: 0.2, optimisedValuePerUnit: 0.2, standardRedemption: "Axis catalogue value", optimisedRedemption: "Transfer at 5 EDGE Points : 2 partner miles; realised travel value varies" } },
-      merchantRules: [{ matches: ["travel edge"], channels: ["app", "online"], earning: { kind: "points", units: 60, spendUnit: 200, currency: { code: "AXIS_EDGE_RP", name: "Axis EDGE Reward Points", unitLabel: "EDGE Points", standardValuePerUnit: 0.2, optimisedValuePerUnit: 0.2, standardRedemption: "Axis catalogue value", optimisedRedemption: "Transfer at 5 EDGE Points : 2 partner miles; realised travel value varies" } }, label: "5X Travel EDGE reward" }],
+      defaultEarning: { kind: "points", units: 12, spendUnit: 200, currency: AXIS_MAGNUS_CURRENCY },
+      merchantRules: [{ matches: ["travel edge"], channels: ["app", "online"], earning: { kind: "points", units: 60, spendUnit: 200, currency: AXIS_MAGNUS_CURRENCY }, label: "5X Travel EDGE reward" }],
+      milestones: [{ id: "magnus-fee-waiver", label: "Renewal fee waiver", period: "anniversary_year", metric: "spend", threshold: 2500000, benefitLabel: "₹12,500 renewal fee waived", benefitValue: 12500, sourceUrl: "https://www.axis.bank.in/cards/credit-card/axis-bank-magnus-credit-card" }],
       assumptions: ["The higher 35-points-per-₹200 band above ₹1.5 lakh monthly spend is excluded until statement-cycle spend is known."],
     },
   }),
@@ -617,6 +696,7 @@ const EMPTY_PROFILE: RecommendationProfile = {
   creditScoreBand: "",
   primaryGoal: "",
   feeComfort: "",
+  redemptionPreference: "balanced",
 };
 
 const EMPTY_SPEND_PROFILE: SpendProfile = {
@@ -628,9 +708,16 @@ const EMPTY_SPEND_PROFILE: SpendProfile = {
   fuel: "",
 };
 
-const PROFILE_COLUMNS = "name, mobile_number, city, income_range, work_status, primary_card_goal, annual_fee_comfort, age_range, credit_score_range, monthly_spends";
+const EMPTY_LEDGER_DRAFT: LedgerDraft = {
+  pointsBalance: "",
+  monthlyEligibleSpend: "",
+  annualEligibleSpend: "",
+  qualifyingTransactions: "",
+};
+
+const PROFILE_COLUMNS = "name, mobile_number, city, income_range, work_status, primary_card_goal, annual_fee_comfort, age_range, credit_score_range, redemption_preference, monthly_spends";
 const INTERACTION_COLUMNS = "id, query, amount, best_card, best_card_id, estimated_reward, incremental_reward, status, created_at, full_response";
-const WALLET_COLUMNS = "id, user_id, card_id, cap_usage_value, cap_usage_source, cap_usage_updated_at, created_at";
+const WALLET_COLUMNS = "id, user_id, card_id, cap_usage_value, cap_usage_source, cap_usage_updated_at, points_balance, monthly_eligible_spend, annual_eligible_spend, qualifying_transactions, ledger_updated_at, created_at";
 
 function mobileDigits(value: string) {
   const digits = value.replace(/\D/g, "");
@@ -667,6 +754,7 @@ function profileFromDatabase(row: ProfileRow | null, fallbackName: string, fallb
     creditScoreBand: row?.credit_score_range ?? "",
     primaryGoal: row?.primary_card_goal ?? "",
     feeComfort: row?.annual_fee_comfort ?? "",
+    redemptionPreference: row?.redemption_preference ?? "balanced",
   };
 }
 
@@ -750,6 +838,32 @@ function shortBankName(bank: string) {
   return bank.replace(" Bank", "").replace(" Card", "");
 }
 
+function redemptionPreferenceLabel(preference: RedemptionPreference) {
+  if (preference === "cash") return "Cash / statement credit";
+  if (preference === "shopping") return "Shopping value";
+  if (preference === "travel") return "Flights & hotels";
+  return "Best verified value";
+}
+
+function redemptionTypeLabel(type: string) {
+  if (type === "cash") return "Statement value";
+  if (type === "voucher") return "Voucher option";
+  if (type === "product") return "Product redemption";
+  if (type === "travel") return "Travel booking";
+  return "Partner transfer";
+}
+
+function decisionFingerprint(result?: RecommendationResult<CardData>) {
+  if (!result) return "no-result";
+  return [
+    result.card.id,
+    result.value,
+    result.ruleLabel,
+    result.selectedRedemption?.id ?? "cashback",
+    result.offersApplied.map((offer) => offer.id).sort().join(","),
+  ].join("|");
+}
+
 const DATA_LOAD_TIMEOUT_MS = 15000;
 
 async function withDataLoadTimeout<T>(request: PromiseLike<T>): Promise<T> {
@@ -778,6 +892,8 @@ export default function Home() {
   const [amount, setAmount] = useState("2000");
   const [purchaseCategory, setPurchaseCategory] = useState<PurchaseCategory>("auto");
   const [paymentChannel, setPaymentChannel] = useState<PaymentChannel>("auto");
+  const [clarificationRequested, setClarificationRequested] = useState(false);
+  const [merchantResolution, setMerchantResolution] = useState<string | null>(null);
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
   const [walletDraftIds, setWalletDraftIds] = useState(DEFAULT_WALLET);
   const [walletRows, setWalletRows] = useState<Record<string, WalletRow>>({});
@@ -793,6 +909,7 @@ export default function Home() {
   const [usageCard, setUsageCard] = useState<CardData | null>(null);
   const [manualUsage, setManualUsage] = useState("");
   const [usageSource, setUsageSource] = useState<"manual" | "tracked">("manual");
+  const [ledgerDraft, setLedgerDraft] = useState<LedgerDraft>(EMPTY_LEDGER_DRAFT);
   const [exploreMode, setExploreMode] = useState<"discover" | "compare">("discover");
   const [exploreCalculated, setExploreCalculated] = useState(false);
   const [consideredCardId, setConsideredCardId] = useState("");
@@ -827,6 +944,7 @@ export default function Home() {
   const activityLoadRequestRef = useRef(0);
   const profileLoadRequestRef = useRef(0);
   const guestSessionRestoredRef = useRef(false);
+  const paymentFormRef = useRef<HTMLFormElement>(null);
   const completeAccountActionRef = useRef<(action?: typeof pendingAction, signedInUserId?: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -867,6 +985,15 @@ export default function Home() {
         capUsed: capAmount ? Math.min(100, Math.round((trackedValue / capAmount) * 100)) : 0,
       };
     }), [catalog, walletIds, walletRows]);
+  const rewardLedgers = useMemo(() => Object.fromEntries(
+    Object.entries(walletRows).map(([cardId, row]): [string, RewardLedger] => [cardId, {
+      pointsBalance: row.points_balance === null ? undefined : Number(row.points_balance) || 0,
+      monthlyEligibleSpend: row.monthly_eligible_spend === null ? undefined : Number(row.monthly_eligible_spend) || 0,
+      annualEligibleSpend: row.annual_eligible_spend === null ? undefined : Number(row.annual_eligible_spend) || 0,
+      qualifyingTransactions: row.qualifying_transactions === null ? undefined : Number(row.qualifying_transactions) || 0,
+      updatedAt: row.ledger_updated_at ?? undefined,
+    }]),
+  ), [walletRows]);
   const requiredProfileValues = [profile.name, normalizedIndianMobile(profile.mobile), profile.city, profile.employment, profile.incomeBand, profile.primaryGoal, profile.feeComfort];
   const completedProfileFields = requiredProfileValues.filter(Boolean).length;
   const profileCompletion = Math.round((completedProfileFields / requiredProfileValues.length) * 100);
@@ -919,17 +1046,136 @@ export default function Home() {
   const consideredUpgradeResult = upgradeEvaluations?.find((item) => item.card.id === consideredCardId) ?? null;
   const upgradeResult = exploreMode === "compare" ? consideredUpgradeResult : discoveryUpgradeResult;
   const numericAmount = Number(amount.replace(/,/g, "")) || 0;
+  const paymentIntent = useMemo(
+    () => analysePaymentIntent(merchant, purchaseCategory, paymentChannel),
+    [merchant, paymentChannel, purchaseCategory],
+  );
+  const possibleChannels = useMemo(() => {
+    const hasRupayCard = walletCards.some((card) => card.network === "RuPay");
+    const filtered = paymentIntent.channelCandidates.filter((candidate) => candidate.value !== "upi" || hasRupayCard || paymentChannel === "upi");
+    return filtered.length ? filtered : paymentIntent.channelCandidates;
+  }, [paymentChannel, paymentIntent.channelCandidates, walletCards]);
+  const possibleMerchants = useMemo(
+    () => merchantResolution ? [] : merchantClarificationCandidates(
+      merchant,
+      paymentIntent.categoryCandidates.map((candidate) => candidate.value),
+      offers,
+    ),
+    [merchant, merchantResolution, offers, paymentIntent.categoryCandidates],
+  );
+  const merchantPaymentScenarios = useMemo(() => possibleMerchants.flatMap((merchantCandidate) => (
+    paymentIntent.categoryCandidates.flatMap((categoryCandidate) => possibleChannels.map((channelCandidate) => {
+      const scenarioRanked = rankCards(walletCards, {
+        merchant: merchantCandidate.value,
+        amount: numericAmount,
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+      }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers });
+      return {
+        merchant: merchantCandidate.value,
+        ranked: scenarioRanked,
+        fingerprint: decisionFingerprint(scenarioRanked[0]),
+      };
+    }))
+  )), [numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, possibleMerchants, profile.redemptionPreference, rewardLedgers, walletCards]);
+  const paymentScenarios = useMemo(() => paymentIntent.categoryCandidates.flatMap((categoryCandidate) => (
+    possibleChannels.map((channelCandidate) => {
+      const scenarioRanked = rankCards(walletCards, {
+        merchant,
+        amount: numericAmount,
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+      }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers });
+      return {
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+        ranked: scenarioRanked,
+        fingerprint: decisionFingerprint(scenarioRanked[0]),
+      };
+    })
+  )), [merchant, numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, rewardLedgers, walletCards]);
+  const decisionClarification = useMemo(() => {
+    if (possibleMerchants.length > 1) {
+      const options = possibleMerchants.map((candidate) => {
+        const scenarios = merchantPaymentScenarios.filter((scenario) => scenario.merchant === candidate.value);
+        const winnerNames = [...new Set(scenarios.flatMap((scenario) => scenario.ranked[0]
+          ? [`${shortBankName(scenario.ranked[0].card.bank)} ${scenario.ranked[0].card.name}`]
+          : []))];
+        const values = scenarios.flatMap((scenario) => scenario.ranked[0] ? [scenario.ranked[0].value] : []);
+        const minValue = values.length ? Math.min(...values) : 0;
+        const maxValue = values.length ? Math.max(...values) : 0;
+        const outcome = winnerNames.length === 1
+          ? `${winnerNames[0]}${minValue === maxValue ? ` · about ₹${minValue.toLocaleString("en-IN")}` : ` · ₹${minValue.toLocaleString("en-IN")}–₹${maxValue.toLocaleString("en-IN")}`}`
+          : `The winning card can change${winnerNames.length ? `: ${winnerNames.slice(0, 2).join(" or ")}` : ""}`;
+        return { ...candidate, outcome };
+      });
+      const signatures = possibleMerchants.map((candidate) => [...new Set(
+        merchantPaymentScenarios.filter((scenario) => scenario.merchant === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        const genericLabel = /salon|spa|haircut|beauty parlou?r/i.test(merchant) ? "salon" : "merchant";
+        return { field: "merchant" as const, question: `Which ${genericLabel} are you paying?`, options };
+      }
+    }
+    const buildClarification = (
+      field: "category" | "channel",
+      question: string,
+      candidates: typeof paymentIntent.categoryCandidates | typeof possibleChannels,
+    ) => {
+      const options = candidates.map((candidate) => {
+        const scenarios = paymentScenarios.filter((scenario) => scenario[field] === candidate.value);
+        const winnerNames = [...new Set(scenarios.flatMap((scenario) => scenario.ranked[0]
+          ? [`${shortBankName(scenario.ranked[0].card.bank)} ${scenario.ranked[0].card.name}`]
+          : []))];
+        const values = scenarios.flatMap((scenario) => scenario.ranked[0] ? [scenario.ranked[0].value] : []);
+        const minValue = values.length ? Math.min(...values) : 0;
+        const maxValue = values.length ? Math.max(...values) : 0;
+        const outcome = winnerNames.length === 1
+          ? `${winnerNames[0]}${minValue === maxValue ? ` · about ₹${minValue.toLocaleString("en-IN")}` : ` · ₹${minValue.toLocaleString("en-IN")}–₹${maxValue.toLocaleString("en-IN")}`}`
+          : `The winning card can change${winnerNames.length ? `: ${winnerNames.slice(0, 2).join(" or ")}` : ""}`;
+        return { ...candidate, outcome };
+      });
+      return { field, question, options };
+    };
+
+    if (purchaseCategory === "auto" && paymentIntent.categoryCandidates.length > 1) {
+      const signatures = paymentIntent.categoryCandidates.map((candidate) => [...new Set(
+        paymentScenarios.filter((scenario) => scenario.category === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        return buildClarification("category", paymentIntent.categoryQuestion, paymentIntent.categoryCandidates);
+      }
+    }
+    if (paymentChannel === "auto" && possibleChannels.length > 1) {
+      const signatures = possibleChannels.map((candidate) => [...new Set(
+        paymentScenarios.filter((scenario) => scenario.channel === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        return buildClarification("channel", paymentIntent.channelQuestion, possibleChannels);
+      }
+    }
+    return null;
+  }, [merchant, merchantPaymentScenarios, paymentChannel, paymentIntent, paymentScenarios, possibleChannels, possibleMerchants, purchaseCategory]);
   const ranked = useMemo(
     () => rankCards(walletCards, {
       merchant,
       amount: numericAmount,
       category: purchaseCategory,
       channel: paymentChannel,
-    }, { offers, rewardValueMode: "standard" }),
-    [merchant, numericAmount, offers, paymentChannel, purchaseCategory, walletCards]
+    }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers }),
+    [merchant, numericAmount, offers, paymentChannel, profile.redemptionPreference, purchaseCategory, rewardLedgers, walletCards]
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
+  const preferenceLeaders = (["cash", "shopping", "travel"] as RedemptionPreference[]).flatMap((preference) => {
+    const result = rankCards(walletCards, {
+      merchant,
+      amount: numericAmount,
+      category: purchaseCategory,
+      channel: paymentChannel,
+    }, { offers, rewardValueMode: "standard", redemptionPreference: preference, ledgers: rewardLedgers })[0];
+    return result ? [{ preference, result }] : [];
+  });
   const isFirstTimeExperience = walletIds.length === 0;
   const latestActivity = activity[0] ?? null;
   const banks = ["All", ...Array.from(new Set(catalog.map((card) => card.bank)))];
@@ -982,6 +1228,16 @@ export default function Home() {
         full_response: {
           merchant: merchant.trim(),
           amount: numericAmount,
+          payment_intent: {
+            category_input: purchaseCategory,
+            payment_channel_input: paymentChannel,
+            category_candidates: paymentIntent.categoryCandidates.map((candidate) => candidate.value),
+            payment_channel_candidates: possibleChannels.map((candidate) => candidate.value),
+            category_source: purchaseCategory === "auto" ? "inferred" : "user_confirmed",
+            payment_channel_source: paymentChannel === "auto"
+              ? possibleChannels.length > 1 ? "stable_across_candidates" : "inferred"
+              : "user_confirmed",
+          },
           category: winner.category,
           payment_channel: winner.channel,
           recommended_card: winner.card.id,
@@ -991,6 +1247,10 @@ export default function Home() {
           cap_adjustment: winner.capAdjustment,
           rule_confidence: winner.confidence,
           rule_label: winner.ruleLabel,
+          redemption_preference: profile.redemptionPreference,
+          redemption_route: winner.selectedRedemption?.label ?? null,
+          redemption_options: winner.redemptionValues,
+          milestone_progress: winner.milestoneProgress,
           assumptions: winner.assumptions,
           incremental_reward: incrementalReward,
         },
@@ -1011,9 +1271,31 @@ export default function Home() {
     const savedActivity = activityFromDatabase(data as InteractionRow);
     setActivity((current) => [savedActivity, ...current.filter((item) => item.id !== savedActivity.id)]);
     setCurrentInteractionId(savedActivity.id);
-    if (status === "tracked") setConfirmed(true);
+    if (status === "tracked") {
+      setConfirmed(true);
+      const ledger = walletRows[winner.card.id];
+      const pointsBalance = ledger?.points_balance === null || ledger?.points_balance === undefined
+        ? null : Number(ledger.points_balance) + (winner.rewardUnits ?? 0);
+      const qualifiesForLedgerSpend = !winner.card.rewardModel.exclusions?.includes(winner.category);
+      const monthlySpend = ledger?.monthly_eligible_spend === null || ledger?.monthly_eligible_spend === undefined
+        ? null : Number(ledger.monthly_eligible_spend) + (qualifiesForLedgerSpend ? numericAmount : 0);
+      const annualSpend = ledger?.annual_eligible_spend === null || ledger?.annual_eligible_spend === undefined
+        ? null : Number(ledger.annual_eligible_spend) + (qualifiesForLedgerSpend ? numericAmount : 0);
+      const qualifiesForTransactionMilestone = qualifiesForLedgerSpend && winner.card.rewardModel.milestones?.some((milestone) => milestone.metric === "transactions" && numericAmount >= (milestone.minTransactionAmount ?? 0));
+      const qualifyingTransactions = ledger?.qualifying_transactions === null || ledger?.qualifying_transactions === undefined || !qualifiesForTransactionMilestone
+        ? ledger?.qualifying_transactions ?? null : Number(ledger.qualifying_transactions) + 1;
+      const ledgerUpdate = {
+        points_balance: pointsBalance,
+        monthly_eligible_spend: monthlySpend,
+        annual_eligible_spend: annualSpend,
+        qualifying_transactions: qualifyingTransactions,
+        ledger_updated_at: new Date().toISOString(),
+      };
+      const { error: ledgerError } = await supabase.from("cards").update(ledgerUpdate).eq("user_id", userId).eq("card_id", winner.card.id);
+      if (!ledgerError) setWalletRows((current) => ({ ...current, [winner.card.id]: { ...current[winner.card.id], ...ledgerUpdate } as WalletRow }));
+    }
     return true;
-  }, [merchant, numericAmount, runnerUp, winner]);
+  }, [merchant, numericAmount, paymentChannel, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, walletRows, winner]);
 
   const submitPayment = (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -1030,7 +1312,14 @@ export default function Home() {
       openWalletPicker();
       return;
     }
+    if (decisionClarification) {
+      setFormError("");
+      setClarificationRequested(true);
+      window.setTimeout(() => document.getElementById("payment-clarification")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+      return;
+    }
     setFormError("");
+    setClarificationRequested(false);
     setActivityError("");
     setConfirmed(false);
     setCurrentInteractionId(null);
@@ -1039,9 +1328,33 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
+  const chooseClarification = (field: "merchant" | "category" | "channel", value: string) => {
+    if (field === "merchant") {
+      setMerchant(value);
+      setMerchantResolution(value);
+    } else if (field === "category") setPurchaseCategory(value as PurchaseCategory);
+    else setPaymentChannel(value as PaymentChannel);
+    setClarificationRequested(false);
+    setFormError("");
+    window.setTimeout(() => paymentFormRef.current?.requestSubmit(), 0);
+  };
+
+  const updateMerchant = (value: string) => {
+    setMerchant(value);
+    setMerchantResolution(null);
+    setPurchaseCategory("auto");
+    setPaymentChannel("auto");
+    setClarificationRequested(false);
+    setFormError("");
+  };
+
   const chooseExample = (name: string, value: string) => {
     setMerchant(name);
+    setMerchantResolution(null);
     setAmount(value);
+    setPurchaseCategory("auto");
+    setPaymentChannel("auto");
+    setClarificationRequested(false);
     setFormError("");
   };
 
@@ -1054,9 +1367,11 @@ export default function Home() {
 
   const repeatPayment = (item: ActivityItem) => {
     setMerchant(item.merchant);
+    setMerchantResolution(item.merchant);
     setAmount(String(item.amount));
     setPurchaseCategory(item.category);
     setPaymentChannel(item.paymentChannel);
+    setClarificationRequested(false);
     setCurrentInteractionId(null);
     setConfirmed(false);
     setFormError("");
@@ -1176,6 +1491,19 @@ export default function Home() {
     setPickerOpen(true);
   };
 
+  const openRewardLedger = (card: CardData) => {
+    const row = walletRows[card.id];
+    setUsageCard(card);
+    setUsageSource(row?.cap_usage_source === "tracked" ? "tracked" : "manual");
+    setManualUsage(row?.cap_usage_value === null || row?.cap_usage_value === undefined ? "" : String(row.cap_usage_value));
+    setLedgerDraft({
+      pointsBalance: row?.points_balance === null || row?.points_balance === undefined ? "" : String(row.points_balance),
+      monthlyEligibleSpend: row?.monthly_eligible_spend === null || row?.monthly_eligible_spend === undefined ? "" : String(row.monthly_eligible_spend),
+      annualEligibleSpend: row?.annual_eligible_spend === null || row?.annual_eligible_spend === undefined ? "" : String(row.annual_eligible_spend),
+      qualifyingTransactions: row?.qualifying_transactions === null || row?.qualifying_transactions === undefined ? "" : String(row.qualifying_transactions),
+    });
+  };
+
   const toggleDraftCard = (id: string) => {
     setWalletDraftIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
@@ -1208,16 +1536,23 @@ export default function Home() {
     if (saved) setAuthNotice("Card removed from your wallet.");
   };
 
-  const saveCapUsage = async (value: number | null) => {
+  const saveWalletIntelligence = async (clear = false) => {
     if (!usageCard || !authUser) return;
     setWalletSaving(true);
     setWalletError("");
+    const capValue = clear ? null : usageSource === "tracked" ? trackedUsageTotal : Number(manualUsage) || 0;
+    const numberOrNull = (value: string) => clear || value === "" ? null : Number(value) || 0;
     const { error } = await supabase
       .from("cards")
       .update({
-        cap_usage_value: value,
-        cap_usage_source: value === null ? null : usageSource,
-        cap_usage_updated_at: value === null ? null : new Date().toISOString(),
+        cap_usage_value: capValue,
+        cap_usage_source: capValue === null ? null : usageSource,
+        cap_usage_updated_at: capValue === null ? null : new Date().toISOString(),
+        points_balance: numberOrNull(ledgerDraft.pointsBalance),
+        monthly_eligible_spend: numberOrNull(ledgerDraft.monthlyEligibleSpend),
+        annual_eligible_spend: numberOrNull(ledgerDraft.annualEligibleSpend),
+        qualifying_transactions: numberOrNull(ledgerDraft.qualifyingTransactions),
+        ledger_updated_at: clear ? null : new Date().toISOString(),
       })
       .eq("user_id", authUser.id)
       .eq("card_id", usageCard.id);
@@ -1229,12 +1564,16 @@ export default function Home() {
     await loadWallet(authUser.id);
     setWalletSaving(false);
     setUsageCard(null);
-    setAuthNotice(value === null ? "Cap usage cleared." : "Cap usage saved.");
+    setAuthNotice(clear ? "Reward estimates cleared." : "Reward balance and milestone progress saved.");
   };
 
   useEffect(() => {
     if (!catalogReady || guestSessionRestoredRef.current) return;
     guestSessionRestoredRef.current = true;
+    const savedPreference = window.localStorage.getItem("cardsmart-redemption-preference") as RedemptionPreference | null;
+    if (savedPreference && ["balanced", "cash", "shopping", "travel"].includes(savedPreference)) {
+      setProfile((current) => ({ ...current, redemptionPreference: savedPreference }));
+    }
     const saved = window.localStorage.getItem("cardsmart-guest-session");
     if (!saved) return;
     try {
@@ -1284,7 +1623,7 @@ export default function Home() {
     }
     else if (!action) setAuthNotice("You’re logged in.");
     if (action === "activity") setView("activity");
-    if (action === "cap_usage" && usageCard) setManualUsage(String(usageCard.trackedValue || ""));
+    if (action === "cap_usage" && usageCard) openRewardLedger(usageCard);
     if (action === "save_profile") {
       setProfileSaved(true);
       setView("profile");
@@ -1572,6 +1911,7 @@ export default function Home() {
       work_status: profile.employment,
       primary_card_goal: profile.primaryGoal,
       annual_fee_comfort: profile.feeComfort,
+      redemption_preference: profile.redemptionPreference,
       age_range: profile.ageBand || null,
       credit_score_range: profile.creditScoreBand || null,
       monthly_spends: monthlySpends,
@@ -1594,6 +1934,15 @@ export default function Home() {
     setProfileSaving(false);
     setProfileSaved(true);
     setAuthNotice("Profile saved. Recommendations can now use these details.");
+  };
+
+  const changeRedemptionPreference = async (preference: RedemptionPreference) => {
+    setProfile((current) => ({ ...current, redemptionPreference: preference }));
+    window.localStorage.setItem("cardsmart-redemption-preference", preference);
+    if (!authUser) return;
+    const { error } = await supabase.from("profiles").update({ redemption_preference: preference }).eq("id", authUser.id);
+    if (error) setProfileError("Your reward-use preference could not be saved. The current result has still been updated.");
+    else setAuthNotice("Reward-use preference saved for future recommendations.");
   };
 
   useEffect(() => {
@@ -1717,31 +2066,48 @@ export default function Home() {
 
               <div className="payment-panel" id="payment-checker">
               <div className="command-heading"><span className="command-dot"/><div><span>{isFirstTimeExperience ? "Try your first payment" : "Ready when you are"}</span><strong>Where are you paying?</strong></div></div>
-              <form onSubmit={submitPayment}>
+              <form ref={paymentFormRef} onSubmit={submitPayment}>
                 <div className="field-group">
                   <label htmlFor="merchant">Store, app or purchase</label>
                   <div className="input-shell input-shell--merchant">
                     <Icon name="search" />
-                    <input id="merchant" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="e.g. Swiggy, Amazon or flight tickets" autoComplete="off" />
+                    <input id="merchant" value={merchant} onChange={(e) => updateMerchant(e.target.value)} placeholder="e.g. Croma TV, Lakme Salon or Swiggy Instamart" autoComplete="off" />
                   </div>
                 </div>
                 <div className="field-group amount-group">
                   <label htmlFor="amount">How much?</label>
                   <div className="input-shell input-shell--amount">
                     <span className="currency">₹</span>
-                    <input id="amount" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0" />
+                    <input id="amount" inputMode="numeric" value={amount} onChange={(e) => { setAmount(e.target.value.replace(/[^0-9]/g, "")); setClarificationRequested(false); }} placeholder="0" />
                   </div>
                 </div>
                 {formError && <p className="form-error">{formError}</p>}
-                <button className="primary-button find-button" type="submit">
-                  Find my best card <Icon name="arrow" />
+                {clarificationRequested && decisionClarification && (
+                  <section className="payment-clarification" id="payment-clarification" aria-live="polite">
+                    <div className="clarification-heading">
+                      <span><Icon name="spark" size={15}/></span>
+                      <div><small>One detail changes the answer</small><strong>{decisionClarification.question}</strong><p>Choose the closest option. We won’t silently assume a route that changes rewards or offers.</p></div>
+                    </div>
+                    <div className="clarification-options">
+                      {decisionClarification.options.map((option) => (
+                        <button type="button" key={option.value} onClick={() => chooseClarification(decisionClarification.field, option.value)}>
+                          <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                          <span className="clarification-outcome">{option.outcome}</span>
+                          <Icon name="chevron" size={16}/>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                <button className="primary-button find-button" type="submit" disabled={clarificationRequested && Boolean(decisionClarification)}>
+                  {clarificationRequested && decisionClarification ? "Choose one option above" : "Find my best card"} {!clarificationRequested && <Icon name="arrow" />}
                 </button>
                 <details className="payment-settings">
                   <summary><Icon name="tune" size={16}/><span>Card or UPI? Choose only if it matters</span><small>Optional</small><Icon name="chevron" size={15}/></summary>
                   <div className="payment-context">
                     <label>
                       <span>Spend category</span>
-                      <select value={purchaseCategory} onChange={(e) => setPurchaseCategory(e.target.value as PurchaseCategory)}>
+                      <select value={purchaseCategory} onChange={(e) => { setPurchaseCategory(e.target.value as PurchaseCategory); setClarificationRequested(false); }}>
                         <option value="auto">Let CardSmart detect it</option>
                         <option value="dining">Dining / food delivery</option>
                         <option value="grocery">Groceries</option>
@@ -1759,7 +2125,7 @@ export default function Home() {
                     </label>
                     <label>
                       <span>Payment method</span>
-                      <select value={paymentChannel} onChange={(e) => setPaymentChannel(e.target.value as PaymentChannel)}>
+                      <select value={paymentChannel} onChange={(e) => { setPaymentChannel(e.target.value as PaymentChannel); setClarificationRequested(false); }}>
                         <option value="auto">Let CardSmart detect it</option>
                         <option value="online">Online card payment</option>
                         <option value="offline">In-store card payment</option>
@@ -1767,7 +2133,7 @@ export default function Home() {
                         <option value="app">Required app / partner checkout</option>
                       </select>
                     </label>
-                    <p><Icon name="info" size={14}/> We usually detect this automatically. Change it only if you know exactly how you’ll pay.</p>
+                    <p><Icon name="info" size={14}/> CardSmart uses what you type and asks only when a missing detail can change the answer.</p>
                   </div>
                 </details>
               </form>
@@ -1978,12 +2344,27 @@ export default function Home() {
             <button className="back-button" onClick={() => setView("home")}><Icon name="back" size={18} /> Check another payment</button>
             <div className="result-heading">
               <span className="transaction-pill"><span>{merchant}</span><strong>₹{numericAmount.toLocaleString("en-IN")}</strong></span>
+              <div className="resolved-payment-context">
+                {purchaseCategory === "auto" && paymentIntent.categoryCandidates.length > 1
+                  ? <span><Icon name="shield" size={13}/>Same answer across the plausible purchase types</span>
+                  : <span><Icon name="check" size={13}/>{purchaseCategory === "auto" ? "Understood" : "Confirmed"}: {winner.category}</span>}
+                {paymentChannel === "auto" && possibleChannels.length > 1
+                  ? <span><Icon name="shield" size={13}/>Same answer across {possibleChannels.map((candidate) => candidate.label.toLowerCase()).join(", ")}</span>
+                  : <span><Icon name="check" size={13}/>{paymentChannel === "auto" ? "Understood" : "Confirmed"}: {winner.channel}</span>}
+              </div>
               <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No reward on this payment"}</span>
               <h1>{winner.eligible ? <>Use <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards won’t earn rewards here"}</h1>
               <p>{winner.eligible
-                ? `${winner.rewardUnits !== null ? `Earn about ${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel}, worth ₹${winner.baseValue.toLocaleString("en-IN")} at the standard redemption` : `About ₹${winner.baseValue.toLocaleString("en-IN")} in base rewards`}${winner.offerValue > 0 ? ` plus ₹${winner.offerValue.toLocaleString("en-IN")} from an active offer` : ""}${runnerUp && winner.value > runnerUp.value ? `, ₹${(winner.value - runnerUp.value).toLocaleString("en-IN")} more than your next best card` : ""}.`
+                ? `${winner.rewardUnits !== null ? winner.selectedRedemption ? `Earn about ${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel}, worth ₹${winner.baseValue.toLocaleString("en-IN")} through ${winner.selectedRedemption.label}` : `Earn about ${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel}; no verified ${redemptionPreferenceLabel(profile.redemptionPreference).toLowerCase()} route is available` : `About ₹${winner.baseValue.toLocaleString("en-IN")} in base rewards`}${winner.offerValue > 0 ? ` plus ₹${winner.offerValue.toLocaleString("en-IN")} from an active offer` : ""}${runnerUp && winner.value > runnerUp.value ? `, ₹${(winner.value - runnerUp.value).toLocaleString("en-IN")} more than your next best card` : ""}.`
                 : "This type of payment is excluded across the cards currently in your wallet."}</p>
             </div>
+
+            <section className="redemption-preference-bar" aria-label="Reward valuation preference">
+              <div><span className="mini-label">Rank this payment for</span><strong>{redemptionPreferenceLabel(profile.redemptionPreference)}</strong></div>
+              <div className="redemption-preference-options">
+                {(["balanced", "cash", "shopping", "travel"] as RedemptionPreference[]).map((preference) => <button className={profile.redemptionPreference === preference ? "active" : ""} onClick={() => void changeRedemptionPreference(preference)} key={preference}>{redemptionPreferenceLabel(preference)}</button>)}
+              </div>
+            </section>
 
             <section className="winner-panel">
               <div className="winner-card-wrap">
@@ -1995,11 +2376,11 @@ export default function Home() {
                 <div className="reward-value">₹{winner.value.toLocaleString("en-IN")}</div>
                 <div className="reward-rate">{winner.eligible
                   ? winner.rewardUnits !== null
-                    ? `${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel} · ${winner.standardRedemption}`
+                    ? `${winner.rewardUnits.toLocaleString("en-IN")} ${winner.rewardUnitLabel} · ${winner.selectedRedemption?.label ?? `No ${redemptionPreferenceLabel(profile.redemptionPreference).toLowerCase()} route`}`
                     : `${winner.rate}% base return on this payment`
                   : winner.ruleLabel}</div>
-                {winner.rewardUnits !== null && winner.optimisedValue > winner.standardValue && (
-                  <div className="points-upside"><Icon name="spark" size={15}/><span>Worth up to <strong>₹{winner.optimisedValue.toLocaleString("en-IN")}</strong> via {winner.optimisedRedemption}</span></div>
+                {winner.rewardUnits !== null && winner.bestKnownRedemptionValue > winner.baseValue && (
+                  <div className="points-upside"><Icon name="spark" size={15}/><span>Another verified route can be worth up to <strong>₹{winner.bestKnownRedemptionValue.toLocaleString("en-IN")}</strong>. See every use below.</span></div>
                 )}
                 {winner.offersApplied.map((offer) => (
                   <div className="active-offer" key={offer.id}><Icon name="gift" size={16}/><div><span>Active offer included</span><strong>{offer.title} · +₹{offer.value.toLocaleString("en-IN")}</strong>{offer.couponCode && <small>Use: {offer.couponCode}</small>}{offer.usageLimit && <small>{offer.usageLimit}</small>}</div></div>
@@ -2033,6 +2414,32 @@ export default function Home() {
               </details>
             </section>
 
+            <section className="value-paths-section">
+              <div className="section-heading"><div><span className="mini-label">One payment, different outcomes</span><h2>See which card wins for how you use rewards</h2><p>CardSmart checks verified redemption routes. You do not need to research issuer catalogues yourself.</p></div></div>
+              <div className="value-path-grid">
+                {preferenceLeaders.map(({ preference, result }) => <button className={profile.redemptionPreference === preference ? "active" : ""} onClick={() => void changeRedemptionPreference(preference)} key={preference}><span>{redemptionPreferenceLabel(preference)}</span><strong>{shortBankName(result.card.bank)} {result.card.name}</strong><small>{result.rewardUnits !== null ? `${result.rewardUnits.toLocaleString("en-IN")} ${result.rewardUnitLabel} · ` : ""}₹{result.value.toLocaleString("en-IN")}{result.selectedRedemption ? ` via ${result.selectedRedemption.label}` : ""}</small></button>)}
+              </div>
+            </section>
+
+            {winner.redemptionValues.length > 0 && (
+              <section className="redemption-catalogue-section">
+                <div className="section-heading"><div><span className="mini-label">Every verified redemption route</span><h2>What {winner.rewardUnits?.toLocaleString("en-IN")} {winner.rewardUnitLabel} can become</h2><p>{rewardLedgers[winner.card.id]?.pointsBalance === undefined ? "Add your current points balance to unlock voucher-readiness calculations." : `Current saved balance: ${rewardLedgers[winner.card.id]?.pointsBalance?.toLocaleString("en-IN")} ${winner.rewardUnitLabel}.`}</p></div><button className="text-button" onClick={() => { setUsageCard(winner.card); if (signedIn) openRewardLedger(winner.card); else requireAccount("cap_usage"); }}><Icon name="edit" size={16}/> Update balance</button></div>
+                <div className="redemption-route-grid">
+                  {winner.redemptionValues.map((route) => {
+                    const availableAfter = (rewardLedgers[winner.card.id]?.pointsBalance ?? 0) + (winner.rewardUnits ?? 0);
+                    return <article className={winner.selectedRedemption?.id === route.id ? "selected" : ""} key={route.id}><span>{redemptionTypeLabel(route.type)}</span><h3>{route.label}</h3>{route.value !== null && <strong>About ₹{route.value.toLocaleString("en-IN")}</strong>}{route.convertedUnits !== null && <strong>{route.convertedUnits.toLocaleString("en-IN")} {route.conversionUnitLabel}</strong>}{route.tiers.map((tier) => <div className="redemption-tier" key={`${route.id}-${tier.units}-${tier.label}`}><b>{tier.label}</b><small>{availableAfter >= tier.units ? "Available with your saved balance" : `${(tier.units - availableAfter).toLocaleString("en-IN")} more points needed`}</small></div>)}{route.conditions.map((condition) => <small key={condition}>{condition}</small>)}{route.sourceUrl && <a href={route.sourceUrl} target="_blank" rel="noreferrer">Issuer redemption rule</a>}</article>;
+                  })}
+                </div>
+              </section>
+            )}
+
+            {winner.milestoneProgress.length > 0 && (
+              <section className="milestone-section">
+                <div className="section-heading"><div><span className="mini-label">Milestone impact</span><h2>What this payment moves you toward</h2><p>Milestone benefits stay separate from today’s reward until the threshold is actually crossed.</p></div><button className="text-button" onClick={() => { setUsageCard(winner.card); if (signedIn) openRewardLedger(winner.card); else requireAccount("cap_usage"); }}><Icon name="edit" size={16}/> Update progress</button></div>
+                <div className="milestone-grid">{winner.milestoneProgress.map((milestone) => <article key={milestone.id}><span>{milestone.period === "calendar_month" ? "This month" : "This card year"}</span><h3>{milestone.label}</h3><strong>{milestone.benefitLabel}</strong>{milestone.after === null ? <p>Progress unknown. Add your latest statement numbers.</p> : <><div className="milestone-track"><i style={{width:`${Math.min(100, (milestone.after / milestone.threshold) * 100)}%`}}/></div><p>{milestone.crossed ? "This payment crosses the threshold." : milestone.metric === "spend" ? `₹${milestone.remaining?.toLocaleString("en-IN")} eligible spend remaining` : `${milestone.remaining?.toLocaleString("en-IN")} qualifying transactions remaining`}{milestone.requiresEnrollment ? " · Enrollment required" : ""}</p></>}</article>)}</div>
+              </section>
+            )}
+
             <section className="comparison-section">
               <div className="section-heading">
                 <div><span className="mini-label">Your other options</span><h2>How the rest of your wallet compares</h2></div>
@@ -2043,7 +2450,7 @@ export default function Home() {
                   <div className={`comparison-row ${index === 0 ? "comparison-row--winner" : ""}`} key={item.card.id}>
                     <span className="rank">{index + 1}</span>
                     <span className="card-swatch" style={{ background: `linear-gradient(135deg, ${item.card.colors[0]}, ${item.card.colors[1]})` }} />
-                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.eligible ? `${item.rewardUnits !== null ? `${item.rewardUnits.toLocaleString("en-IN")} ${item.rewardUnitLabel}` : `${item.rate}%`} · ${confidenceLabel(item.confidence)}` : item.ruleLabel}{item.offerValue > 0 ? ` · ₹${item.offerValue.toLocaleString("en-IN")} offer` : ""}{item.capAdjustment > 0 ? ` · ₹${item.capAdjustment.toLocaleString("en-IN")} capped` : ""}</span></div>
+                    <div className="comparison-name"><strong>{item.card.bank} {item.card.name}</strong><span>{item.eligible ? `${item.rewardUnits !== null ? `${item.rewardUnits.toLocaleString("en-IN")} ${item.rewardUnitLabel}${item.selectedRedemption ? ` via ${item.selectedRedemption.label}` : ""}` : `${item.rate}%`} · ${confidenceLabel(item.confidence)}` : item.ruleLabel}{item.offerValue > 0 ? ` · ₹${item.offerValue.toLocaleString("en-IN")} offer` : ""}{item.capAdjustment > 0 ? ` · ₹${item.capAdjustment.toLocaleString("en-IN")} capped` : ""}</span></div>
                     <div className="comparison-value"><strong>₹{item.value.toLocaleString("en-IN")}</strong>{index === 0 && <span>{item.eligible ? "Best" : "Excluded"}</span>}</div>
                   </div>
                 ))}
@@ -2080,7 +2487,7 @@ export default function Home() {
             {walletIds.length > 0 && !walletLoading && (
               <section className="wallet-overview">
                 <div><span>Wallet ready</span><strong>{walletIds.length}</strong><small>{walletIds.length === 1 ? "card available" : "cards compared every time"}</small></div>
-                <div><span>Reward caps updated</span><strong>{walletCards.filter((card) => card.trackedValue > 0).length}/{walletIds.length}</strong><small>Improve ranking accuracy</small></div>
+                <div><span>Reward data updated</span><strong>{walletCards.filter((card) => card.trackedValue > 0 || walletRows[card.id]?.ledger_updated_at).length}/{walletIds.length}</strong><small>Balances, caps or milestones</small></div>
                 <button onClick={() => setView("home")}><span><Icon name="spark" size={17}/></span><div><strong>Use my wallet</strong><small>Check a payment now</small></div><Icon name="arrow" size={17}/></button>
               </section>
             )}
@@ -2116,7 +2523,8 @@ export default function Home() {
                       <div className="cap-track"><span style={{ width: `${card.capUsed}%` }} /></div>
                       <p>{card.cap}</p>
                     </div>
-                    <button className="card-detail-link" onClick={() => { setUsageCard(card); setUsageSource(walletRows[card.id]?.cap_usage_source === "tracked" ? "tracked" : "manual"); if (signedIn) setManualUsage(String(card.trackedValue || "")); else requireAccount("cap_usage"); }}>Update rewards earned <Icon name="chevron" size={16} /></button>
+                    {walletRows[card.id]?.ledger_updated_at && <div className="wallet-ledger-snapshot"><span>{walletRows[card.id]?.points_balance != null ? <><strong>{Number(walletRows[card.id]?.points_balance).toLocaleString("en-IN")}</strong> points/miles</> : "Balance unknown"}</span><span>{walletRows[card.id]?.annual_eligible_spend != null ? <><strong>₹{Number(walletRows[card.id]?.annual_eligible_spend).toLocaleString("en-IN")}</strong> eligible this card year</> : "Annual spend unknown"}</span></div>}
+                    <button className="card-detail-link" onClick={() => { if (signedIn) openRewardLedger(card); else { setUsageCard(card); requireAccount("cap_usage"); } }}>Update reward balance & milestones <Icon name="chevron" size={16} /></button>
                   </div>
                 </article>
                 ))}
@@ -2195,6 +2603,7 @@ export default function Home() {
                   <div className="profile-section-heading"><span>3</span><div><h2>What you want from a card</h2><p>This changes what “best” means for you.</p></div></div>
                   <div className="profile-fields two-columns">
                     <label><span>Primary goal *</span><select value={profile.primaryGoal} onChange={(e) => setProfile({...profile, primaryGoal:e.target.value})}><option value="">Choose your priority</option><option>Simple cashback</option><option>Travel rewards</option><option>Premium benefits</option><option>Low fees</option><option>Build credit history</option></select></label>
+                    <label><span>How should we value your rewards?</span><select value={profile.redemptionPreference} onChange={(e) => setProfile({...profile, redemptionPreference:e.target.value as RedemptionPreference})}><option value="balanced">Show the best verified options</option><option value="cash">Cashback / statement credit</option><option value="shopping">Shopping vouchers & products</option><option value="travel">Flights & hotels</option></select></label>
                     <label><span>Annual fee comfort *</span><select value={profile.feeComfort} onChange={(e) => setProfile({...profile, feeComfort:e.target.value})}><option value="">Choose fee comfort</option><option>Lifetime free only</option><option>Up to ₹1,000</option><option>Up to ₹3,000</option><option>Up to ₹10,000</option><option>Any fee if value is higher</option></select></label>
                   </div>
                 </section>
@@ -2220,6 +2629,7 @@ export default function Home() {
                   <div><span>Income</span><strong>{profile.incomeBand || "Not added"}</strong></div>
                   <div><span>Credit score</span><strong>{profile.creditScoreBand || "Not shared"}</strong></div>
                   <div><span>Primary goal</span><strong>{profile.primaryGoal || "Not added"}</strong></div>
+                  <div><span>Reward value preference</span><strong>{profile.redemptionPreference === "cash" ? "Cashback / statement credit" : profile.redemptionPreference === "shopping" ? "Shopping vouchers & products" : profile.redemptionPreference === "travel" ? "Flights & hotels" : "Best verified options"}</strong></div>
                   <div><span>Fee comfort</span><strong>{profile.feeComfort || "Not added"}</strong></div>
                   <div><span>Monthly card spend</span><strong>{monthlyCardSpend ? `₹${monthlyCardSpend.toLocaleString("en-IN")}` : "Not added"}</strong></div>
                   <div><span>Cards owned</span><strong>{walletIds.length ? `${walletIds.length} ${walletIds.length === 1 ? "card" : "cards"}` : "None added"}</strong></div>
@@ -2271,7 +2681,27 @@ export default function Home() {
         <button className={view === "activity" ? "active" : ""} onClick={() => openProtectedView("activity")}><Icon name="clock" /><span>Savings</span></button>
       </nav>
 
-      {usageCard && <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !walletSaving) setUsageCard(null); }}><section className="usage-modal" role="dialog" aria-modal="true" aria-labelledby="usage-title"><button className="close-button usage-close" disabled={walletSaving} onClick={() => setUsageCard(null)}><Icon name="close"/></button><span className="mini-label">Usage setup</span><h2 id="usage-title">Update {usageCard.name} usage</h2><p className="usage-intro">This helps us avoid recommending a reward rate after you have already exhausted its cap.</p><div className="usage-rule"><Icon name="gift"/><div><span>Reward rule being tracked</span><strong>{usageCard.cap}</strong></div></div><label className="usage-field"><span>How much reward have you already earned in this period?</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" disabled={usageSource === "tracked"} value={usageSource === "tracked" ? String(trackedUsageTotal) : manualUsage} onChange={(e) => setManualUsage(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0"/></div></label><div className="source-choice"><button className={usageSource === "manual" ? "active" : ""} onClick={() => setUsageSource("manual")}><Icon name="edit" size={15}/><span><strong>User entered</strong><small>Includes usage outside CardSmart</small></span></button><button className={usageSource === "tracked" ? "active" : ""} onClick={() => setUsageSource("tracked")}><Icon name="clock" size={15}/><span><strong>Tracked only</strong><small>Use confirmed payments</small></span></button></div><div className="usage-actions"><button className="secondary-button" disabled={walletSaving} onClick={() => void saveCapUsage(null)}>I don’t know</button><button className="primary-button" disabled={walletSaving} onClick={() => void saveCapUsage(usageSource === "tracked" ? trackedUsageTotal : Number(manualUsage) || 0)}>{walletSaving ? "Saving…" : "Save usage"} {!walletSaving && <Icon name="check"/>}</button></div><p className="usage-note"><Icon name="info" size={15}/> Stored as an estimate with its source and update date. It does not claim statement-level accuracy.</p></section></div>}
+      {usageCard && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target && !walletSaving) setUsageCard(null); }}>
+          <section className="usage-modal usage-modal--ledger" role="dialog" aria-modal="true" aria-labelledby="usage-title">
+            <button className="close-button usage-close" disabled={walletSaving} onClick={() => setUsageCard(null)}><Icon name="close"/></button>
+            <span className="mini-label">Reward intelligence</span>
+            <h2 id="usage-title">Update {usageCard.name}</h2>
+            <p className="usage-intro">Use your latest statement or card app. CardSmart uses these numbers to calculate caps, redemption readiness and milestone progress.</p>
+            <div className="usage-rule"><Icon name="gift"/><div><span>Rule being tracked</span><strong>{usageCard.cap}</strong></div></div>
+            <div className="ledger-grid">
+              {usageCard.rewardModel.defaultEarning?.kind === "points" && <label className="usage-field"><span>Current points or miles balance</span><div className="input-shell"><input inputMode="numeric" value={ledgerDraft.pointsBalance} onChange={(e) => setLedgerDraft({...ledgerDraft, pointsBalance:e.target.value.replace(/[^0-9]/g, "")})} placeholder="Not known"/></div></label>}
+              <label className="usage-field"><span>Eligible spend this calendar month</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" value={ledgerDraft.monthlyEligibleSpend} onChange={(e) => setLedgerDraft({...ledgerDraft, monthlyEligibleSpend:e.target.value.replace(/[^0-9]/g, "")})} placeholder="Not known"/></div></label>
+              <label className="usage-field"><span>Eligible spend this card year</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" value={ledgerDraft.annualEligibleSpend} onChange={(e) => setLedgerDraft({...ledgerDraft, annualEligibleSpend:e.target.value.replace(/[^0-9]/g, "")})} placeholder="Not known"/></div></label>
+              <label className="usage-field"><span>Qualifying transactions this month</span><div className="input-shell"><input inputMode="numeric" value={ledgerDraft.qualifyingTransactions} onChange={(e) => setLedgerDraft({...ledgerDraft, qualifyingTransactions:e.target.value.replace(/[^0-9]/g, "")})} placeholder="Not known"/></div></label>
+              <label className="usage-field"><span>Reward already earned against the current cap</span><div className="input-shell input-shell--amount"><b>₹</b><input inputMode="numeric" disabled={usageSource === "tracked"} value={usageSource === "tracked" ? String(trackedUsageTotal) : manualUsage} onChange={(e) => setManualUsage(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0"/></div></label>
+            </div>
+            <div className="source-choice"><button className={usageSource === "manual" ? "active" : ""} onClick={() => setUsageSource("manual")}><Icon name="edit" size={15}/><span><strong>Latest statement/card app</strong><small>Includes activity outside CardSmart</small></span></button><button className={usageSource === "tracked" ? "active" : ""} onClick={() => setUsageSource("tracked")}><Icon name="clock" size={15}/><span><strong>CardSmart tracked only</strong><small>Use confirmed payments for cap usage</small></span></button></div>
+            <div className="usage-actions"><button className="secondary-button" disabled={walletSaving} onClick={() => void saveWalletIntelligence(true)}>Clear estimates</button><button className="primary-button" disabled={walletSaving} onClick={() => void saveWalletIntelligence()}>{walletSaving ? "Saving…" : "Save reward data"} {!walletSaving && <Icon name="check"/>}</button></div>
+            <p className="usage-note"><Icon name="info" size={15}/> CardSmart never assumes unknown balances. Statement import can replace manual entry in a later release.</p>
+          </section>
+        </div>
+      )}
 
       {pickerOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setPickerOpen(false); }}>

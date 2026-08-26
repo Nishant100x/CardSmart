@@ -3,11 +3,13 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const engine = readFileSync(new URL("../src/recommendationEngine.ts", import.meta.url), "utf8");
 const repository = readFileSync(new URL("../src/catalogueRepository.ts", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 const monitor = readFileSync(new URL("../supabase/functions/card-monitor/index.ts", import.meta.url), "utf8");
 const monitoringSql = readFileSync(new URL("../supabase/card-monitoring-setup.sql", import.meta.url), "utf8");
 const rewardsSql = readFileSync(new URL("../supabase/rewards-truth-layer-v10.10.sql", import.meta.url), "utf8");
+const redemptionSql = readFileSync(new URL("../supabase/redemption-intelligence-v10.11.sql", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -89,4 +91,31 @@ test("points and offers stay separate and auditable in the payment result", () =
   assert.match(repository, /from\("card_offers"\)/);
   assert.match(rewardsSql, /reward_validation_cases/);
   assert.match(rewardsSql, /hsbc-zepto-2026/);
+});
+
+test("redemption options and milestone progress are first-class product decisions", () => {
+  assert.match(source, /One payment, different outcomes/);
+  assert.match(source, /Every verified redemption route/);
+  assert.match(source, /Milestone impact/);
+  assert.match(source, /redemption_preference/);
+  assert.match(source, /points_balance/);
+  assert.match(css, /\.redemption-route-grid/);
+  assert.match(css, /\.milestone-grid/);
+  assert.match(redemptionSql, /reward_redemption_routes/);
+  assert.match(redemptionSql, /card_milestones/);
+  assert.match(redemptionSql, /monthly_eligible_spend/);
+});
+
+test("natural payment input asks only when ambiguity changes the recommendation", () => {
+  assert.match(engine, /analysePaymentIntent/);
+  assert.match(engine, /return "auto"/);
+  assert.match(engine, /Credit-card UPI requires an eligible RuPay card/);
+  assert.match(source, /decisionClarification/);
+  assert.match(source, /One detail changes the answer/);
+  assert.match(source, /We won’t silently assume a route/);
+  assert.match(source, /requestSubmit/);
+  assert.match(source, /merchantClarificationCandidates/);
+  assert.match(source, /Which \$\{genericLabel\} are you paying/);
+  assert.match(css, /\.payment-clarification/);
+  assert.match(css, /\.resolved-payment-context/);
 });

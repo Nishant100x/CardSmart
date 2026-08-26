@@ -5,6 +5,27 @@ export type PurchaseCategory =
 export type PaymentChannel = "auto" | "online" | "offline" | "upi" | "app";
 export type RuleConfidence = "verified" | "reviewed" | "indicative";
 export type RewardValueMode = "standard" | "optimised";
+export type RedemptionPreference = "balanced" | "cash" | "shopping" | "travel";
+export type RedemptionType = "cash" | "voucher" | "product" | "travel" | "transfer";
+
+export type RedemptionTier = {
+  units: number;
+  value?: number;
+  label: string;
+};
+
+export type RedemptionOption = {
+  id: string;
+  type: RedemptionType;
+  label: string;
+  valuePerUnit?: number;
+  conversionUnitsPerPoint?: number;
+  conversionUnitLabel?: string;
+  tiers?: RedemptionTier[];
+  conditions?: string[];
+  sourceUrl?: string;
+  confidence?: RuleConfidence;
+};
 
 export type RewardCurrency = {
   code: string;
@@ -14,6 +35,20 @@ export type RewardCurrency = {
   optimisedValuePerUnit?: number;
   standardRedemption: string;
   optimisedRedemption?: string;
+  redemptionOptions?: RedemptionOption[];
+};
+
+export type MilestoneRule = {
+  id: string;
+  label: string;
+  period: "calendar_month" | "anniversary_year";
+  metric: "spend" | "transactions";
+  threshold: number;
+  minTransactionAmount?: number;
+  benefitLabel: string;
+  benefitValue?: number;
+  requiresEnrollment?: boolean;
+  sourceUrl?: string;
 };
 
 export type RewardEarning =
@@ -51,6 +86,7 @@ export type RewardModel = {
   channelRates?: Partial<Record<Exclude<PaymentChannel, "auto">, number>>;
   channelEarnings?: Partial<Record<Exclude<PaymentChannel, "auto">, RewardEarning>>;
   defaultCapAmount?: number;
+  milestones?: MilestoneRule[];
   assumptions?: string[];
 };
 
@@ -84,11 +120,32 @@ export type CardOffer = {
 export type RecommendationCard = {
   id: string;
   bank?: string;
+  network?: string;
   baseRate: number;
   rates: Record<string, number>;
   merchantRates?: Record<string, number>;
   trackedValue: number;
   rewardModel: RewardModel;
+};
+
+export type PaymentIntentCandidate<T extends string> = {
+  value: T;
+  label: string;
+  description: string;
+};
+
+export type PaymentIntentAnalysis = {
+  rawText: string;
+  categoryCandidates: PaymentIntentCandidate<Exclude<PurchaseCategory, "auto">>[];
+  channelCandidates: PaymentIntentCandidate<Exclude<PaymentChannel, "auto">>[];
+  categoryQuestion: string;
+  channelQuestion: string;
+  categoryConfidence: "high" | "needs_confirmation";
+  channelConfidence: "high" | "needs_confirmation";
+};
+
+export type MerchantIntentCandidate = PaymentIntentCandidate<string> & {
+  offerId?: string;
 };
 
 export type RecommendationInput = {
@@ -102,6 +159,46 @@ export type EvaluationContext = {
   offers?: CardOffer[];
   asOf?: string | Date;
   rewardValueMode?: RewardValueMode;
+  redemptionPreference?: RedemptionPreference;
+  ledgers?: Record<string, RewardLedger>;
+};
+
+export type RewardLedger = {
+  pointsBalance?: number;
+  monthlyEligibleSpend?: number;
+  annualEligibleSpend?: number;
+  qualifyingTransactions?: number;
+  updatedAt?: string;
+};
+
+export type RedemptionValue = {
+  id: string;
+  type: RedemptionType;
+  label: string;
+  value: number | null;
+  valuePerUnit: number | null;
+  convertedUnits: number | null;
+  conversionUnitLabel: string | null;
+  tiers: RedemptionTier[];
+  conditions: string[];
+  sourceUrl?: string;
+  confidence: RuleConfidence;
+};
+
+export type MilestoneProgress = {
+  id: string;
+  label: string;
+  period: MilestoneRule["period"];
+  metric: MilestoneRule["metric"];
+  threshold: number;
+  before: number | null;
+  after: number | null;
+  remaining: number | null;
+  crossed: boolean;
+  benefitLabel: string;
+  benefitValue?: number;
+  requiresEnrollment: boolean;
+  sourceUrl?: string;
 };
 
 export type AppliedOffer = {
@@ -130,6 +227,10 @@ export type RecommendationResult<T extends RecommendationCard> = {
   rewardUnitLabel: string | null;
   standardRedemption: string | null;
   optimisedRedemption: string | null;
+  selectedRedemption: RedemptionValue | null;
+  redemptionValues: RedemptionValue[];
+  bestKnownRedemptionValue: number;
+  milestoneProgress: MilestoneProgress[];
   valueMode: RewardValueMode;
   offersApplied: AppliedOffer[];
   capAmount: number | null;
@@ -152,20 +253,191 @@ const CATEGORY_PATTERNS: Array<[Exclude<PurchaseCategory, "auto">, RegExp]> = [
   ["dining", /swiggy|zomato|restaurant|dinner|lunch|cafe|food|dineout/],
   ["grocery", /grocery|blinkit|zepto|bigbasket|dmart|instamart/],
   ["wallet", /wallet load|add money|paytm wallet|amazon pay balance/],
-  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|lakme/],
+  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|croma|chroma|vijay sales|reliance digital|cosmetic|makeup/],
 ];
 
 export function inferCategory(merchant: string): Exclude<PurchaseCategory, "auto"> {
   const text = merchant.trim().toLowerCase();
+  if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) return "grocery";
+  if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) return "dining";
+  if (/salon|haircut|hair cut|spa|beauty parlou?r/.test(text)) return "other";
   return CATEGORY_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
 }
 
-export function inferChannel(merchant: string): Exclude<PaymentChannel, "auto"> {
+export function inferChannel(merchant: string): PaymentChannel {
   const text = merchant.trim().toLowerCase();
   if (/\bupi\b|bhim|qr code|rupay upi/.test(text)) return "upi";
   if (/google pay|gpay|airtel thanks|tata neu app|smartbuy|travel edge|partner app/.test(text)) return "app";
   if (/offline|in.store|at store|pos\b|swipe|tap/.test(text)) return "offline";
-  return "online";
+  if (/online|website|web site|web-site|checkout page|e.?commerce/.test(text)) return "online";
+  return "auto";
+}
+
+const CATEGORY_LABELS: Record<Exclude<PurchaseCategory, "auto">, [string, string]> = {
+  dining: ["Food delivery or dining", "Restaurant, takeaway or delivered food"],
+  grocery: ["Groceries", "Groceries or everyday essentials"],
+  shopping: ["Shopping", "Products such as electronics, fashion or household items"],
+  travel: ["Travel", "Flights, hotels, trains or cabs"],
+  utilities: ["Bill or recharge", "Electricity, mobile, broadband, gas or DTH"],
+  fuel: ["Fuel", "Petrol, diesel or fuel-station payment"],
+  rent: ["Rent", "House rent or housing payment"],
+  education: ["Education", "School, college, tuition or course fee"],
+  insurance: ["Insurance", "Insurance premium payment"],
+  government: ["Government or tax", "Tax, challan or government payment"],
+  wallet: ["Wallet load", "Adding money to a wallet or stored balance"],
+  other: ["Other service", "Salon, professional service or another payment"],
+};
+
+const CHANNEL_LABELS: Record<Exclude<PaymentChannel, "auto">, [string, string]> = {
+  online: ["Card on a website", "Paying by card on the merchant website"],
+  offline: ["Card at the store", "Swiping, inserting or tapping the card in person"],
+  app: ["Card in an app", "Paying inside a merchant or partner app"],
+  upi: ["RuPay credit card via UPI", "Paying a merchant UPI ID or QR with an eligible RuPay credit card"],
+};
+
+function uniqueCandidates<T extends string>(values: T[], factory: (value: T) => PaymentIntentCandidate<T>) {
+  return [...new Set(values)].map(factory);
+}
+
+function categoryCandidate(value: Exclude<PurchaseCategory, "auto">) {
+  const labels = CATEGORY_LABELS[value];
+  return { value, label: labels[0], description: labels[1] };
+}
+
+function channelCandidate(value: Exclude<PaymentChannel, "auto">) {
+  const labels = CHANNEL_LABELS[value];
+  return { value, label: labels[0], description: labels[1] };
+}
+
+export function analysePaymentIntent(
+  rawText: string,
+  category: PurchaseCategory = "auto",
+  channel: PaymentChannel = "auto",
+): PaymentIntentAnalysis {
+  const text = rawText.trim().toLowerCase();
+  let categoryValues: Exclude<PurchaseCategory, "auto">[];
+  let categoryQuestion = "What is this payment for?";
+
+  if (category !== "auto") categoryValues = [category];
+  else if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) categoryValues = ["grocery"];
+  else if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) categoryValues = ["dining"];
+  else if (/swiggy/.test(text)) {
+    categoryValues = ["dining", "grocery"];
+    categoryQuestion = "What are you ordering on Swiggy?";
+  } else if (/amazon(?!\s+pay\s+(?:wallet|balance))/.test(text)
+    && !/fresh|grocery|groceries|flight|hotel|travel|bill|recharge|electricity|electronics|phone|mobile|fashion|shopping|product|wallet load|add money/.test(text)) {
+    categoryValues = ["shopping", "grocery", "travel", "utilities", "wallet"];
+    categoryQuestion = "What are you paying for on Amazon?";
+  } else if (/google pay|gpay|paytm|phonepe|amazon pay/.test(text) && inferCategory(text) === "other") {
+    categoryValues = ["utilities", "shopping", "wallet", "other"];
+    categoryQuestion = "What is the payment inside the app for?";
+  } else categoryValues = [inferCategory(text)];
+
+  let channelValues: Exclude<PaymentChannel, "auto">[];
+  let channelQuestion = "How will you make this payment?";
+  const explicitChannel = channel === "auto" ? inferChannel(text) : channel;
+  if (explicitChannel !== "auto") channelValues = [explicitChannel];
+  else if (/croma|chroma|vijay sales|reliance digital|salon|spa|store|mall/.test(text)) {
+    channelValues = ["offline", "online", "app", "upi"];
+    channelQuestion = /salon|spa/.test(text) ? "How will you pay for this salon visit?" : "Are you buying online or at the store?";
+  } else if (/swiggy|zomato|blinkit|zepto|instamart|amazon|flipkart|myntra|bigbasket/.test(text)) {
+    channelValues = ["app", "online", "upi"];
+    channelQuestion = "How will you pay at checkout?";
+  } else if (/flight|airline|hotel|travel|electricity|bill|recharge|broadband|insurance|premium|rent|school|college|course/.test(text)) {
+    channelValues = ["app", "online", "upi"];
+  } else if (/fuel|petrol|diesel|restaurant|cafe/.test(text)) {
+    channelValues = ["offline", "upi"];
+  } else channelValues = ["online", "offline", "app", "upi"];
+
+  const categoryCandidates = uniqueCandidates(categoryValues, categoryCandidate);
+  const channelCandidates = uniqueCandidates(channelValues, channelCandidate);
+  return {
+    rawText: rawText.trim(),
+    categoryCandidates,
+    channelCandidates,
+    categoryQuestion,
+    channelQuestion,
+    categoryConfidence: categoryCandidates.length === 1 ? "high" : "needs_confirmation",
+    channelConfidence: channelCandidates.length === 1 ? "high" : "needs_confirmation",
+  };
+}
+
+const GENERIC_MERCHANT_TERMS = new Set([
+  "salon", "spa", "haircut", "beauty", "parlour", "parlor",
+  "grocery", "groceries", "essentials", "supermarket",
+  "restaurant", "cafe", "food", "dinner", "lunch",
+  "electronics", "shopping", "store", "mall", "clothes", "fashion",
+  "flight", "hotel", "travel", "cab", "train",
+  "electricity", "bill", "recharge", "broadband", "utility",
+  "fuel", "petrol", "diesel", "rent", "school", "college", "fees",
+  "insurance", "premium", "tax", "wallet", "payment", "purchase", "order",
+]);
+
+const GENERIC_INPUT_FILLERS = new Set([
+  "a", "an", "the", "at", "for", "from", "in", "inside", "my", "near", "nearby", "local",
+  "on", "to", "visit", "pay", "paying", "buy", "buying", "karna", "karni", "karne", "ka", "ki", "ke",
+  "se", "pe", "mein", "hai", "another", "other",
+]);
+
+export function isGenericMerchantInput(rawText: string) {
+  const tokens = rawText.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  if (!tokens.some((token) => GENERIC_MERCHANT_TERMS.has(token))) return false;
+  return tokens.every((token) => GENERIC_MERCHANT_TERMS.has(token) || GENERIC_INPUT_FILLERS.has(token) || /^\d+$/.test(token));
+}
+
+function displayMerchantName(value: string) {
+  return value.split(/[\s_-]+/).filter(Boolean).map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`).join(" ");
+}
+
+function genericAlternativeLabel(rawText: string) {
+  const text = rawText.toLowerCase();
+  if (/salon|spa|haircut|beauty parlou?r/.test(text)) return "Another salon";
+  if (/grocery|groceries|essentials|supermarket/.test(text)) return "Another grocery merchant";
+  if (/restaurant|cafe|food|dinner|lunch/.test(text)) return "Another restaurant or food merchant";
+  if (/electronics|shopping|store|mall|fashion/.test(text)) return "Another store";
+  return "Another merchant";
+}
+
+export function merchantClarificationCandidates(
+  rawText: string,
+  categories: Array<Exclude<PurchaseCategory, "auto">>,
+  offers: CardOffer[],
+  asOf: string | Date = new Date(),
+): MerchantIntentCandidate[] {
+  if (!isGenericMerchantInput(rawText)) return [];
+  const currentDate = asDate(asOf);
+  const normalized = rawText.toLowerCase();
+  const categorySet = new Set(categories);
+  const candidates = new Map<string, MerchantIntentCandidate>();
+
+  for (const offer of offers) {
+    if (offer.startsAt && currentDate < new Date(offer.startsAt)) continue;
+    if (offer.endsAt && currentDate > new Date(offer.endsAt)) continue;
+    const offerCategories = offer.categories?.length
+      ? offer.categories
+      : [inferCategory(`${offer.title} ${offer.merchantMatches.join(" ")}`)];
+    if (!offerCategories.some((category) => categorySet.has(category))) continue;
+    for (const match of offer.merchantMatches) {
+      const value = match.trim().toLowerCase();
+      if (!value || value === "*" || normalized.includes(value) || candidates.has(value)) continue;
+      candidates.set(value, {
+        value: displayMerchantName(value),
+        label: displayMerchantName(value),
+        description: `Known offer: ${offer.title}`,
+        offerId: offer.id,
+      });
+    }
+  }
+
+  if (!candidates.size) return [];
+  return [
+    ...candidates.values(),
+    {
+      value: rawText.trim(),
+      label: genericAlternativeLabel(rawText),
+      description: "Not one of the offer-linked merchants above",
+    },
+  ];
 }
 
 function rateForLegacyCategory(card: RecommendationCard, category: Exclude<PurchaseCategory, "auto">) {
@@ -190,24 +462,112 @@ function matchingMerchantRule(
   });
 }
 
-function evaluateEarning(earning: RewardEarning, amount: number, valueMode: RewardValueMode) {
+function redemptionValuesForCurrency(currency: RewardCurrency, rewardUnits: number, pointsBalance?: number): RedemptionValue[] {
+  const configured: RedemptionOption[] = currency.redemptionOptions?.length
+    ? currency.redemptionOptions
+    : [
+        { id: "standard", type: "cash" as const, label: currency.standardRedemption, valuePerUnit: currency.standardValuePerUnit },
+        ...(currency.optimisedValuePerUnit && currency.optimisedValuePerUnit !== currency.standardValuePerUnit
+          ? [{ id: "optimised", type: "travel" as const, label: currency.optimisedRedemption ?? "Higher-value redemption", valuePerUnit: currency.optimisedValuePerUnit }]
+          : []),
+      ];
+  return configured.map((option) => {
+    const eligibleTier = pointsBalance === undefined ? undefined : (option.tiers ?? [])
+      .filter((tier) => pointsBalance + rewardUnits >= tier.units && tier.value !== undefined)
+      .sort((left, right) => ((right.value ?? 0) / right.units) - ((left.value ?? 0) / left.units))[0];
+    const tierValuePerUnit = eligibleTier?.value === undefined ? undefined : eligibleTier.value / eligibleTier.units;
+    const valuePerUnit = option.valuePerUnit ?? tierValuePerUnit;
+    return {
+    id: option.id,
+    type: option.type,
+    label: option.label,
+    value: valuePerUnit === undefined ? null : Math.round(rewardUnits * valuePerUnit),
+    valuePerUnit: valuePerUnit ?? null,
+    convertedUnits: option.conversionUnitsPerPoint === undefined
+      ? null : Number((rewardUnits * option.conversionUnitsPerPoint).toFixed(2)),
+    conversionUnitLabel: option.conversionUnitLabel ?? null,
+    tiers: option.tiers ?? [],
+    conditions: option.conditions ?? [],
+    sourceUrl: option.sourceUrl,
+    confidence: option.confidence ?? "reviewed",
+  }; });
+}
+
+function optionMatchesPreference(option: RedemptionValue, preference: RedemptionPreference) {
+  if (preference === "cash") return option.type === "cash";
+  if (preference === "shopping") return option.type === "voucher" || option.type === "product";
+  if (preference === "travel") return option.type === "travel";
+  return false;
+}
+
+function evaluateEarning(
+  earning: RewardEarning, amount: number, valueMode: RewardValueMode,
+  preference: RedemptionPreference = "balanced",
+  pointsBalance?: number,
+) {
   if (earning.kind === "cashback") {
     const value = Math.round((amount * earning.rate) / 100);
     return { rate: earning.rate, grossValue: value, standardValue: value, optimisedValue: value,
-      rewardUnits: null, rewardUnitLabel: null, standardRedemption: null, optimisedRedemption: null };
+      rewardUnits: null, rewardUnitLabel: null, standardRedemption: null, optimisedRedemption: null,
+      selectedRedemption: null, redemptionValues: [] as RedemptionValue[], bestKnownRedemptionValue: value };
   }
   const rawUnits = (amount / earning.spendUnit) * earning.units;
   const rewardUnits = earning.rounding === "exact" ? rawUnits : Math.floor(rawUnits);
+  const redemptionValues = redemptionValuesForCurrency(earning.currency, rewardUnits, pointsBalance);
   const standardValue = Math.round(rewardUnits * earning.currency.standardValuePerUnit);
-  const optimisedValue = Math.round(rewardUnits * (earning.currency.optimisedValuePerUnit ?? earning.currency.standardValuePerUnit));
-  const grossValue = valueMode === "optimised" ? optimisedValue : standardValue;
+  const knownValues = redemptionValues.filter((option) => option.value !== null);
+  const optimisedValue = Math.max(standardValue, ...knownValues.map((option) => option.value ?? 0));
+  const preferred = preference === "balanced"
+    ? null
+    : knownValues.filter((option) => optionMatchesPreference(option, preference)).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))[0] ?? null;
+  const defaultRedemption = knownValues.find((option) => option.type === "cash") ?? knownValues[0] ?? null;
+  const selectedRedemption = preference === "balanced" ? defaultRedemption : preferred;
+  const grossValue = valueMode === "optimised"
+    ? optimisedValue
+    : preference === "balanced"
+      ? selectedRedemption?.value ?? standardValue
+      : selectedRedemption?.value ?? 0;
   return {
     rate: amount > 0 ? Number(((grossValue / amount) * 100).toFixed(2)) : 0,
     grossValue, standardValue, optimisedValue, rewardUnits,
     rewardUnitLabel: earning.currency.unitLabel,
     standardRedemption: earning.currency.standardRedemption,
     optimisedRedemption: earning.currency.optimisedRedemption ?? earning.currency.standardRedemption,
+    selectedRedemption,
+    redemptionValues,
+    bestKnownRedemptionValue: optimisedValue,
   };
+}
+
+function milestoneProgress(
+  cardId: string, model: RewardModel, input: RecommendationInput,
+  category: Exclude<PurchaseCategory, "auto">, context: EvaluationContext,
+) {
+  const ledger = context.ledgers?.[cardId];
+  return (model.milestones ?? []).map((milestone): MilestoneProgress => {
+    const before = milestone.metric === "spend"
+      ? milestone.period === "calendar_month" ? ledger?.monthlyEligibleSpend : ledger?.annualEligibleSpend
+      : ledger?.qualifyingTransactions;
+    const qualifiesCategory = !model.exclusions?.includes(category);
+    const qualifies = qualifiesCategory && (milestone.metric === "spend" || input.amount >= (milestone.minTransactionAmount ?? 0));
+    const increment = qualifies ? milestone.metric === "spend" ? input.amount : 1 : 0;
+    const after = before === undefined ? null : before + increment;
+    return {
+      id: milestone.id,
+      label: milestone.label,
+      period: milestone.period,
+      metric: milestone.metric,
+      threshold: milestone.threshold,
+      before: before ?? null,
+      after,
+      remaining: after === null ? null : Math.max(0, milestone.threshold - after),
+      crossed: before !== undefined && before < milestone.threshold && (after ?? before) >= milestone.threshold,
+      benefitLabel: milestone.benefitLabel,
+      benefitValue: milestone.benefitValue,
+      requiresEnrollment: Boolean(milestone.requiresEnrollment),
+      sourceUrl: milestone.sourceUrl,
+    };
+  });
 }
 
 function asDate(value: string | Date | undefined) {
@@ -265,12 +625,28 @@ export function evaluateCard<T extends RecommendationCard>(
   card: T, input: RecommendationInput, context: EvaluationContext = {},
 ): RecommendationResult<T> {
   const category = input.category === "auto" ? inferCategory(input.merchant) : input.category;
-  const channel = input.channel === "auto" ? inferChannel(input.merchant) : input.channel;
+  const inferredChannel = input.channel === "auto" ? inferChannel(input.merchant) : input.channel;
+  const channel: Exclude<PaymentChannel, "auto"> = inferredChannel === "auto" ? "online" : inferredChannel;
   const model = card.rewardModel;
   const valueMode = context.rewardValueMode ?? "standard";
+  const preference = context.redemptionPreference ?? "balanced";
+  const milestones = milestoneProgress(card.id, model, input, category, context);
   const assumptions = [...(model.assumptions ?? [])];
   if (input.category === "auto") assumptions.unshift(`Category auto-detected as ${category}.`);
-  if (input.channel === "auto") assumptions.unshift(`Payment route auto-detected as ${channel}.`);
+  if (input.channel === "auto" && inferredChannel !== "auto") assumptions.unshift(`Payment route auto-detected as ${channel}.`);
+  if (input.channel === "auto" && inferredChannel === "auto") assumptions.unshift("Payment route was not stated; the online route is shown only as a provisional estimate.");
+
+  if (channel === "upi" && card.network && card.network !== "RuPay") {
+    return {
+      card, category, channel, rate: 0, grossValue: 0, baseValue: 0, offerValue: 0, value: 0,
+      standardValue: 0, optimisedValue: 0, rewardUnits: null, rewardUnitLabel: null,
+      standardRedemption: null, optimisedRedemption: null, valueMode, offersApplied: [],
+      selectedRedemption: null, redemptionValues: [], bestKnownRedemptionValue: 0, milestoneProgress: milestones,
+      capAmount: null, capRemaining: null, capAdjustment: 0, eligible: false,
+      ruleLabel: "Credit-card UPI requires an eligible RuPay card",
+      confidence: model.confidence, assumptions,
+    };
+  }
 
   if (model.exclusions?.includes(category)) {
     const offersApplied = applicableOffers(card, input, category, channel, context);
@@ -279,6 +655,7 @@ export function evaluateCard<T extends RecommendationCard>(
       card, category, channel, rate: 0, grossValue: 0, baseValue: 0, offerValue, value: offerValue,
       standardValue: 0, optimisedValue: 0, rewardUnits: null, rewardUnitLabel: null,
       standardRedemption: null, optimisedRedemption: null, valueMode, offersApplied,
+      selectedRedemption: null, redemptionValues: [], bestKnownRedemptionValue: 0, milestoneProgress: milestones,
       capAmount: null, capRemaining: null, capAdjustment: 0, eligible: offerValue > 0,
       ruleLabel: offerValue > 0 ? `Base rewards excluded; active offer still applies` : `${category} is excluded from rewards`,
       confidence: model.confidence, assumptions,
@@ -294,7 +671,7 @@ export function evaluateCard<T extends RecommendationCard>(
     ?? model.channelRates?.[channel] ?? model.categoryRates?.[category];
   const legacyRate = structuredRate ?? legacyMerchantRate ?? rateForLegacyCategory(card, category) ?? card.baseRate;
   const earning: RewardEarning = structuredEarning ?? { kind: "cashback", rate: legacyRate };
-  const earned = evaluateEarning(earning, input.amount, valueMode);
+  const earned = evaluateEarning(earning, input.amount, valueMode, preference, context.ledgers?.[card.id]?.pointsBalance);
   const capAmount = structuredMerchantRule?.capAmount ?? model.defaultCapAmount ?? null;
   const capRemaining = capAmount === null ? null : Math.max(0, capAmount - card.trackedValue);
   const baseValue = capRemaining === null ? earned.grossValue : Math.min(earned.grossValue, capRemaining);
@@ -307,6 +684,8 @@ export function evaluateCard<T extends RecommendationCard>(
     value: baseValue + offerValue, standardValue: earned.standardValue, optimisedValue: earned.optimisedValue,
     rewardUnits: earned.rewardUnits, rewardUnitLabel: earned.rewardUnitLabel,
     standardRedemption: earned.standardRedemption, optimisedRedemption: earned.optimisedRedemption,
+    selectedRedemption: earned.selectedRedemption, redemptionValues: earned.redemptionValues,
+    bestKnownRedemptionValue: earned.bestKnownRedemptionValue, milestoneProgress: milestones,
     valueMode, offersApplied, capAmount, capRemaining, capAdjustment, eligible: true,
     ruleLabel: structuredMerchantRule?.label
       ?? (structuredEarning !== undefined || structuredRate !== undefined ? `${category} / ${channel} rule` : "Base reward rule"),
