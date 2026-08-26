@@ -5,6 +5,8 @@ import {
   evaluateCard,
   inferCategory,
   inferChannel,
+  isGenericMerchantInput,
+  merchantClarificationCandidates,
   rankCards,
   type CardOffer,
   type RecommendationCard,
@@ -87,6 +89,33 @@ test("multi-service apps ask for the purchase type instead of inventing it", () 
     analysePaymentIntent("Amazon").categoryCandidates.map((item) => item.value),
     ["shopping", "grocery", "travel", "utilities", "wallet"],
   );
+});
+
+test("generic merchant language exposes current offer-linked merchants without guessing", () => {
+  const offers: CardOffer[] = [{
+    id: "lakme",
+    title: "₹1,100 off at Lakme Salon",
+    issuer: "HSBC",
+    merchantMatches: ["lakme"],
+    channels: ["offline"],
+    minSpend: 3000,
+    startsAt: "2026-01-01T00:00:00+05:30",
+    endsAt: "2026-12-31T23:59:59+05:30",
+    benefit: { kind: "instant_discount", fixedAmount: 1100 },
+    confidence: "verified",
+    sourceUrl: "https://example.com",
+  }];
+  assert.equal(isGenericMerchantInput("salon"), true);
+  assert.equal(isGenericMerchantInput("nearby salon"), true);
+  assert.equal(isGenericMerchantInput("Lakme salon"), false);
+  assert.equal(isGenericMerchantInput("Croma electronics"), false);
+  assert.deepEqual(
+    merchantClarificationCandidates("salon", ["other"], offers, "2026-08-26")
+      .map((candidate) => candidate.label),
+    ["Lakme", "Another salon"],
+  );
+  assert.deepEqual(merchantClarificationCandidates("Lakme Salon", ["other"], offers, "2026-08-26"), []);
+  assert.deepEqual(merchantClarificationCandidates("salon", ["other"], offers, "2027-01-01"), []);
 });
 
 test("credit-card UPI excludes a non-RuPay card", () => {

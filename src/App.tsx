@@ -9,6 +9,7 @@ import {
   analysePaymentIntent,
   confidenceLabel,
   evaluateCard,
+  merchantClarificationCandidates,
   rankCards,
   type CardOffer,
   type PaymentChannel,
@@ -892,6 +893,7 @@ export default function Home() {
   const [purchaseCategory, setPurchaseCategory] = useState<PurchaseCategory>("auto");
   const [paymentChannel, setPaymentChannel] = useState<PaymentChannel>("auto");
   const [clarificationRequested, setClarificationRequested] = useState(false);
+  const [merchantResolution, setMerchantResolution] = useState<string | null>(null);
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
   const [walletDraftIds, setWalletDraftIds] = useState(DEFAULT_WALLET);
   const [walletRows, setWalletRows] = useState<Record<string, WalletRow>>({});
@@ -1053,6 +1055,29 @@ export default function Home() {
     const filtered = paymentIntent.channelCandidates.filter((candidate) => candidate.value !== "upi" || hasRupayCard || paymentChannel === "upi");
     return filtered.length ? filtered : paymentIntent.channelCandidates;
   }, [paymentChannel, paymentIntent.channelCandidates, walletCards]);
+  const possibleMerchants = useMemo(
+    () => merchantResolution ? [] : merchantClarificationCandidates(
+      merchant,
+      paymentIntent.categoryCandidates.map((candidate) => candidate.value),
+      offers,
+    ),
+    [merchant, merchantResolution, offers, paymentIntent.categoryCandidates],
+  );
+  const merchantPaymentScenarios = useMemo(() => possibleMerchants.flatMap((merchantCandidate) => (
+    paymentIntent.categoryCandidates.flatMap((categoryCandidate) => possibleChannels.map((channelCandidate) => {
+      const scenarioRanked = rankCards(walletCards, {
+        merchant: merchantCandidate.value,
+        amount: numericAmount,
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+      }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers });
+      return {
+        merchant: merchantCandidate.value,
+        ranked: scenarioRanked,
+        fingerprint: decisionFingerprint(scenarioRanked[0]),
+      };
+    }))
+  )), [numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, possibleMerchants, profile.redemptionPreference, rewardLedgers, walletCards]);
   const paymentScenarios = useMemo(() => paymentIntent.categoryCandidates.flatMap((categoryCandidate) => (
     possibleChannels.map((channelCandidate) => {
       const scenarioRanked = rankCards(walletCards, {
@@ -1070,6 +1095,28 @@ export default function Home() {
     })
   )), [merchant, numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, rewardLedgers, walletCards]);
   const decisionClarification = useMemo(() => {
+    if (possibleMerchants.length > 1) {
+      const options = possibleMerchants.map((candidate) => {
+        const scenarios = merchantPaymentScenarios.filter((scenario) => scenario.merchant === candidate.value);
+        const winnerNames = [...new Set(scenarios.flatMap((scenario) => scenario.ranked[0]
+          ? [`${shortBankName(scenario.ranked[0].card.bank)} ${scenario.ranked[0].card.name}`]
+          : []))];
+        const values = scenarios.flatMap((scenario) => scenario.ranked[0] ? [scenario.ranked[0].value] : []);
+        const minValue = values.length ? Math.min(...values) : 0;
+        const maxValue = values.length ? Math.max(...values) : 0;
+        const outcome = winnerNames.length === 1
+          ? `${winnerNames[0]}${minValue === maxValue ? ` · about ₹${minValue.toLocaleString("en-IN")}` : ` · ₹${minValue.toLocaleString("en-IN")}–₹${maxValue.toLocaleString("en-IN")}`}`
+          : `The winning card can change${winnerNames.length ? `: ${winnerNames.slice(0, 2).join(" or ")}` : ""}`;
+        return { ...candidate, outcome };
+      });
+      const signatures = possibleMerchants.map((candidate) => [...new Set(
+        merchantPaymentScenarios.filter((scenario) => scenario.merchant === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        const genericLabel = /salon|spa|haircut|beauty parlou?r/i.test(merchant) ? "salon" : "merchant";
+        return { field: "merchant" as const, question: `Which ${genericLabel} are you paying?`, options };
+      }
+    }
     const buildClarification = (
       field: "category" | "channel",
       question: string,
@@ -1108,7 +1155,7 @@ export default function Home() {
       }
     }
     return null;
-  }, [paymentChannel, paymentIntent, paymentScenarios, possibleChannels, purchaseCategory]);
+  }, [merchant, merchantPaymentScenarios, paymentChannel, paymentIntent, paymentScenarios, possibleChannels, possibleMerchants, purchaseCategory]);
   const ranked = useMemo(
     () => rankCards(walletCards, {
       merchant,
@@ -1281,8 +1328,11 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
-  const chooseClarification = (field: "category" | "channel", value: string) => {
-    if (field === "category") setPurchaseCategory(value as PurchaseCategory);
+  const chooseClarification = (field: "merchant" | "category" | "channel", value: string) => {
+    if (field === "merchant") {
+      setMerchant(value);
+      setMerchantResolution(value);
+    } else if (field === "category") setPurchaseCategory(value as PurchaseCategory);
     else setPaymentChannel(value as PaymentChannel);
     setClarificationRequested(false);
     setFormError("");
@@ -1291,6 +1341,7 @@ export default function Home() {
 
   const updateMerchant = (value: string) => {
     setMerchant(value);
+    setMerchantResolution(null);
     setPurchaseCategory("auto");
     setPaymentChannel("auto");
     setClarificationRequested(false);
@@ -1299,6 +1350,7 @@ export default function Home() {
 
   const chooseExample = (name: string, value: string) => {
     setMerchant(name);
+    setMerchantResolution(null);
     setAmount(value);
     setPurchaseCategory("auto");
     setPaymentChannel("auto");
@@ -1315,6 +1367,7 @@ export default function Home() {
 
   const repeatPayment = (item: ActivityItem) => {
     setMerchant(item.merchant);
+    setMerchantResolution(item.merchant);
     setAmount(String(item.amount));
     setPurchaseCategory(item.category);
     setPaymentChannel(item.paymentChannel);

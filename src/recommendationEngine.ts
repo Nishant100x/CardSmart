@@ -144,6 +144,10 @@ export type PaymentIntentAnalysis = {
   channelConfidence: "high" | "needs_confirmation";
 };
 
+export type MerchantIntentCandidate = PaymentIntentCandidate<string> & {
+  offerId?: string;
+};
+
 export type RecommendationInput = {
   merchant: string;
   amount: number;
@@ -356,6 +360,84 @@ export function analysePaymentIntent(
     categoryConfidence: categoryCandidates.length === 1 ? "high" : "needs_confirmation",
     channelConfidence: channelCandidates.length === 1 ? "high" : "needs_confirmation",
   };
+}
+
+const GENERIC_MERCHANT_TERMS = new Set([
+  "salon", "spa", "haircut", "beauty", "parlour", "parlor",
+  "grocery", "groceries", "essentials", "supermarket",
+  "restaurant", "cafe", "food", "dinner", "lunch",
+  "electronics", "shopping", "store", "mall", "clothes", "fashion",
+  "flight", "hotel", "travel", "cab", "train",
+  "electricity", "bill", "recharge", "broadband", "utility",
+  "fuel", "petrol", "diesel", "rent", "school", "college", "fees",
+  "insurance", "premium", "tax", "wallet", "payment", "purchase", "order",
+]);
+
+const GENERIC_INPUT_FILLERS = new Set([
+  "a", "an", "the", "at", "for", "from", "in", "inside", "my", "near", "nearby", "local",
+  "on", "to", "visit", "pay", "paying", "buy", "buying", "karna", "karni", "karne", "ka", "ki", "ke",
+  "se", "pe", "mein", "hai", "another", "other",
+]);
+
+export function isGenericMerchantInput(rawText: string) {
+  const tokens = rawText.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  if (!tokens.some((token) => GENERIC_MERCHANT_TERMS.has(token))) return false;
+  return tokens.every((token) => GENERIC_MERCHANT_TERMS.has(token) || GENERIC_INPUT_FILLERS.has(token) || /^\d+$/.test(token));
+}
+
+function displayMerchantName(value: string) {
+  return value.split(/[\s_-]+/).filter(Boolean).map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`).join(" ");
+}
+
+function genericAlternativeLabel(rawText: string) {
+  const text = rawText.toLowerCase();
+  if (/salon|spa|haircut|beauty parlou?r/.test(text)) return "Another salon";
+  if (/grocery|groceries|essentials|supermarket/.test(text)) return "Another grocery merchant";
+  if (/restaurant|cafe|food|dinner|lunch/.test(text)) return "Another restaurant or food merchant";
+  if (/electronics|shopping|store|mall|fashion/.test(text)) return "Another store";
+  return "Another merchant";
+}
+
+export function merchantClarificationCandidates(
+  rawText: string,
+  categories: Array<Exclude<PurchaseCategory, "auto">>,
+  offers: CardOffer[],
+  asOf: string | Date = new Date(),
+): MerchantIntentCandidate[] {
+  if (!isGenericMerchantInput(rawText)) return [];
+  const currentDate = asDate(asOf);
+  const normalized = rawText.toLowerCase();
+  const categorySet = new Set(categories);
+  const candidates = new Map<string, MerchantIntentCandidate>();
+
+  for (const offer of offers) {
+    if (offer.startsAt && currentDate < new Date(offer.startsAt)) continue;
+    if (offer.endsAt && currentDate > new Date(offer.endsAt)) continue;
+    const offerCategories = offer.categories?.length
+      ? offer.categories
+      : [inferCategory(`${offer.title} ${offer.merchantMatches.join(" ")}`)];
+    if (!offerCategories.some((category) => categorySet.has(category))) continue;
+    for (const match of offer.merchantMatches) {
+      const value = match.trim().toLowerCase();
+      if (!value || value === "*" || normalized.includes(value) || candidates.has(value)) continue;
+      candidates.set(value, {
+        value: displayMerchantName(value),
+        label: displayMerchantName(value),
+        description: `Known offer: ${offer.title}`,
+        offerId: offer.id,
+      });
+    }
+  }
+
+  if (!candidates.size) return [];
+  return [
+    ...candidates.values(),
+    {
+      value: rawText.trim(),
+      label: genericAlternativeLabel(rawText),
+      description: "Not one of the offer-linked merchants above",
+    },
+  ];
 }
 
 function rateForLegacyCategory(card: RecommendationCard, category: Exclude<PurchaseCategory, "auto">) {

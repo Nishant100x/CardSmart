@@ -114,6 +114,8 @@ test("natural payment input asks only when ambiguity changes the recommendation"
   assert.match(source, /One detail changes the answer/);
   assert.match(source, /We won’t silently assume a route/);
   assert.match(source, /requestSubmit/);
+  assert.match(source, /merchantClarificationCandidates/);
+  assert.match(source, /Which \$\{genericLabel\} are you paying/);
   assert.match(css, /\.payment-clarification/);
   assert.match(css, /\.resolved-payment-context/);
 });
