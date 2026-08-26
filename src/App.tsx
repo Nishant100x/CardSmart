@@ -6,12 +6,14 @@ import { isSupabaseConfigured, supabase } from "./supabase";
 import { loadPublishedCatalog } from "./catalogueRepository";
 import type { CardData, DiscoveryMeta } from "./catalogueData";
 import {
+  analysePaymentIntent,
   confidenceLabel,
   evaluateCard,
   rankCards,
   type CardOffer,
   type PaymentChannel,
   type PurchaseCategory,
+  type RecommendationResult,
   type RedemptionPreference,
   type RewardCurrency,
   type RewardLedger,
@@ -850,6 +852,17 @@ function redemptionTypeLabel(type: string) {
   return "Partner transfer";
 }
 
+function decisionFingerprint(result?: RecommendationResult<CardData>) {
+  if (!result) return "no-result";
+  return [
+    result.card.id,
+    result.value,
+    result.ruleLabel,
+    result.selectedRedemption?.id ?? "cashback",
+    result.offersApplied.map((offer) => offer.id).sort().join(","),
+  ].join("|");
+}
+
 const DATA_LOAD_TIMEOUT_MS = 15000;
 
 async function withDataLoadTimeout<T>(request: PromiseLike<T>): Promise<T> {
@@ -878,6 +891,7 @@ export default function Home() {
   const [amount, setAmount] = useState("2000");
   const [purchaseCategory, setPurchaseCategory] = useState<PurchaseCategory>("auto");
   const [paymentChannel, setPaymentChannel] = useState<PaymentChannel>("auto");
+  const [clarificationRequested, setClarificationRequested] = useState(false);
   const [walletIds, setWalletIds] = useState(DEFAULT_WALLET);
   const [walletDraftIds, setWalletDraftIds] = useState(DEFAULT_WALLET);
   const [walletRows, setWalletRows] = useState<Record<string, WalletRow>>({});
@@ -928,6 +942,7 @@ export default function Home() {
   const activityLoadRequestRef = useRef(0);
   const profileLoadRequestRef = useRef(0);
   const guestSessionRestoredRef = useRef(false);
+  const paymentFormRef = useRef<HTMLFormElement>(null);
   const completeAccountActionRef = useRef<(action?: typeof pendingAction, signedInUserId?: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -1029,6 +1044,71 @@ export default function Home() {
   const consideredUpgradeResult = upgradeEvaluations?.find((item) => item.card.id === consideredCardId) ?? null;
   const upgradeResult = exploreMode === "compare" ? consideredUpgradeResult : discoveryUpgradeResult;
   const numericAmount = Number(amount.replace(/,/g, "")) || 0;
+  const paymentIntent = useMemo(
+    () => analysePaymentIntent(merchant, purchaseCategory, paymentChannel),
+    [merchant, paymentChannel, purchaseCategory],
+  );
+  const possibleChannels = useMemo(() => {
+    const hasRupayCard = walletCards.some((card) => card.network === "RuPay");
+    const filtered = paymentIntent.channelCandidates.filter((candidate) => candidate.value !== "upi" || hasRupayCard || paymentChannel === "upi");
+    return filtered.length ? filtered : paymentIntent.channelCandidates;
+  }, [paymentChannel, paymentIntent.channelCandidates, walletCards]);
+  const paymentScenarios = useMemo(() => paymentIntent.categoryCandidates.flatMap((categoryCandidate) => (
+    possibleChannels.map((channelCandidate) => {
+      const scenarioRanked = rankCards(walletCards, {
+        merchant,
+        amount: numericAmount,
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+      }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers });
+      return {
+        category: categoryCandidate.value,
+        channel: channelCandidate.value,
+        ranked: scenarioRanked,
+        fingerprint: decisionFingerprint(scenarioRanked[0]),
+      };
+    })
+  )), [merchant, numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, rewardLedgers, walletCards]);
+  const decisionClarification = useMemo(() => {
+    const buildClarification = (
+      field: "category" | "channel",
+      question: string,
+      candidates: typeof paymentIntent.categoryCandidates | typeof possibleChannels,
+    ) => {
+      const options = candidates.map((candidate) => {
+        const scenarios = paymentScenarios.filter((scenario) => scenario[field] === candidate.value);
+        const winnerNames = [...new Set(scenarios.flatMap((scenario) => scenario.ranked[0]
+          ? [`${shortBankName(scenario.ranked[0].card.bank)} ${scenario.ranked[0].card.name}`]
+          : []))];
+        const values = scenarios.flatMap((scenario) => scenario.ranked[0] ? [scenario.ranked[0].value] : []);
+        const minValue = values.length ? Math.min(...values) : 0;
+        const maxValue = values.length ? Math.max(...values) : 0;
+        const outcome = winnerNames.length === 1
+          ? `${winnerNames[0]}${minValue === maxValue ? ` · about ₹${minValue.toLocaleString("en-IN")}` : ` · ₹${minValue.toLocaleString("en-IN")}–₹${maxValue.toLocaleString("en-IN")}`}`
+          : `The winning card can change${winnerNames.length ? `: ${winnerNames.slice(0, 2).join(" or ")}` : ""}`;
+        return { ...candidate, outcome };
+      });
+      return { field, question, options };
+    };
+
+    if (purchaseCategory === "auto" && paymentIntent.categoryCandidates.length > 1) {
+      const signatures = paymentIntent.categoryCandidates.map((candidate) => [...new Set(
+        paymentScenarios.filter((scenario) => scenario.category === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        return buildClarification("category", paymentIntent.categoryQuestion, paymentIntent.categoryCandidates);
+      }
+    }
+    if (paymentChannel === "auto" && possibleChannels.length > 1) {
+      const signatures = possibleChannels.map((candidate) => [...new Set(
+        paymentScenarios.filter((scenario) => scenario.channel === candidate.value).map((scenario) => scenario.fingerprint),
+      )].sort().join("||"));
+      if (new Set(signatures).size > 1) {
+        return buildClarification("channel", paymentIntent.channelQuestion, possibleChannels);
+      }
+    }
+    return null;
+  }, [paymentChannel, paymentIntent, paymentScenarios, possibleChannels, purchaseCategory]);
   const ranked = useMemo(
     () => rankCards(walletCards, {
       merchant,
@@ -1101,6 +1181,16 @@ export default function Home() {
         full_response: {
           merchant: merchant.trim(),
           amount: numericAmount,
+          payment_intent: {
+            category_input: purchaseCategory,
+            payment_channel_input: paymentChannel,
+            category_candidates: paymentIntent.categoryCandidates.map((candidate) => candidate.value),
+            payment_channel_candidates: possibleChannels.map((candidate) => candidate.value),
+            category_source: purchaseCategory === "auto" ? "inferred" : "user_confirmed",
+            payment_channel_source: paymentChannel === "auto"
+              ? possibleChannels.length > 1 ? "stable_across_candidates" : "inferred"
+              : "user_confirmed",
+          },
           category: winner.category,
           payment_channel: winner.channel,
           recommended_card: winner.card.id,
@@ -1158,7 +1248,7 @@ export default function Home() {
       if (!ledgerError) setWalletRows((current) => ({ ...current, [winner.card.id]: { ...current[winner.card.id], ...ledgerUpdate } as WalletRow }));
     }
     return true;
-  }, [merchant, numericAmount, profile.redemptionPreference, runnerUp, walletRows, winner]);
+  }, [merchant, numericAmount, paymentChannel, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, walletRows, winner]);
 
   const submitPayment = (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -1175,7 +1265,14 @@ export default function Home() {
       openWalletPicker();
       return;
     }
+    if (decisionClarification) {
+      setFormError("");
+      setClarificationRequested(true);
+      window.setTimeout(() => document.getElementById("payment-clarification")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+      return;
+    }
     setFormError("");
+    setClarificationRequested(false);
     setActivityError("");
     setConfirmed(false);
     setCurrentInteractionId(null);
@@ -1184,9 +1281,28 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
+  const chooseClarification = (field: "category" | "channel", value: string) => {
+    if (field === "category") setPurchaseCategory(value as PurchaseCategory);
+    else setPaymentChannel(value as PaymentChannel);
+    setClarificationRequested(false);
+    setFormError("");
+    window.setTimeout(() => paymentFormRef.current?.requestSubmit(), 0);
+  };
+
+  const updateMerchant = (value: string) => {
+    setMerchant(value);
+    setPurchaseCategory("auto");
+    setPaymentChannel("auto");
+    setClarificationRequested(false);
+    setFormError("");
+  };
+
   const chooseExample = (name: string, value: string) => {
     setMerchant(name);
     setAmount(value);
+    setPurchaseCategory("auto");
+    setPaymentChannel("auto");
+    setClarificationRequested(false);
     setFormError("");
   };
 
@@ -1202,6 +1318,7 @@ export default function Home() {
     setAmount(String(item.amount));
     setPurchaseCategory(item.category);
     setPaymentChannel(item.paymentChannel);
+    setClarificationRequested(false);
     setCurrentInteractionId(null);
     setConfirmed(false);
     setFormError("");
@@ -1896,31 +2013,48 @@ export default function Home() {
 
               <div className="payment-panel" id="payment-checker">
               <div className="command-heading"><span className="command-dot"/><div><span>{isFirstTimeExperience ? "Try your first payment" : "Ready when you are"}</span><strong>Where are you paying?</strong></div></div>
-              <form onSubmit={submitPayment}>
+              <form ref={paymentFormRef} onSubmit={submitPayment}>
                 <div className="field-group">
                   <label htmlFor="merchant">Store, app or purchase</label>
                   <div className="input-shell input-shell--merchant">
                     <Icon name="search" />
-                    <input id="merchant" value={merchant} onChange={(e) => setMerchant(e.target.value)} placeholder="e.g. Swiggy, Amazon or flight tickets" autoComplete="off" />
+                    <input id="merchant" value={merchant} onChange={(e) => updateMerchant(e.target.value)} placeholder="e.g. Croma TV, Lakme Salon or Swiggy Instamart" autoComplete="off" />
                   </div>
                 </div>
                 <div className="field-group amount-group">
                   <label htmlFor="amount">How much?</label>
                   <div className="input-shell input-shell--amount">
                     <span className="currency">₹</span>
-                    <input id="amount" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} placeholder="0" />
+                    <input id="amount" inputMode="numeric" value={amount} onChange={(e) => { setAmount(e.target.value.replace(/[^0-9]/g, "")); setClarificationRequested(false); }} placeholder="0" />
                   </div>
                 </div>
                 {formError && <p className="form-error">{formError}</p>}
-                <button className="primary-button find-button" type="submit">
-                  Find my best card <Icon name="arrow" />
+                {clarificationRequested && decisionClarification && (
+                  <section className="payment-clarification" id="payment-clarification" aria-live="polite">
+                    <div className="clarification-heading">
+                      <span><Icon name="spark" size={15}/></span>
+                      <div><small>One detail changes the answer</small><strong>{decisionClarification.question}</strong><p>Choose the closest option. We won’t silently assume a route that changes rewards or offers.</p></div>
+                    </div>
+                    <div className="clarification-options">
+                      {decisionClarification.options.map((option) => (
+                        <button type="button" key={option.value} onClick={() => chooseClarification(decisionClarification.field, option.value)}>
+                          <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                          <span className="clarification-outcome">{option.outcome}</span>
+                          <Icon name="chevron" size={16}/>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
+                <button className="primary-button find-button" type="submit" disabled={clarificationRequested && Boolean(decisionClarification)}>
+                  {clarificationRequested && decisionClarification ? "Choose one option above" : "Find my best card"} {!clarificationRequested && <Icon name="arrow" />}
                 </button>
                 <details className="payment-settings">
                   <summary><Icon name="tune" size={16}/><span>Card or UPI? Choose only if it matters</span><small>Optional</small><Icon name="chevron" size={15}/></summary>
                   <div className="payment-context">
                     <label>
                       <span>Spend category</span>
-                      <select value={purchaseCategory} onChange={(e) => setPurchaseCategory(e.target.value as PurchaseCategory)}>
+                      <select value={purchaseCategory} onChange={(e) => { setPurchaseCategory(e.target.value as PurchaseCategory); setClarificationRequested(false); }}>
                         <option value="auto">Let CardSmart detect it</option>
                         <option value="dining">Dining / food delivery</option>
                         <option value="grocery">Groceries</option>
@@ -1938,7 +2072,7 @@ export default function Home() {
                     </label>
                     <label>
                       <span>Payment method</span>
-                      <select value={paymentChannel} onChange={(e) => setPaymentChannel(e.target.value as PaymentChannel)}>
+                      <select value={paymentChannel} onChange={(e) => { setPaymentChannel(e.target.value as PaymentChannel); setClarificationRequested(false); }}>
                         <option value="auto">Let CardSmart detect it</option>
                         <option value="online">Online card payment</option>
                         <option value="offline">In-store card payment</option>
@@ -1946,7 +2080,7 @@ export default function Home() {
                         <option value="app">Required app / partner checkout</option>
                       </select>
                     </label>
-                    <p><Icon name="info" size={14}/> We usually detect this automatically. Change it only if you know exactly how you’ll pay.</p>
+                    <p><Icon name="info" size={14}/> CardSmart uses what you type and asks only when a missing detail can change the answer.</p>
                   </div>
                 </details>
               </form>
@@ -2157,6 +2291,14 @@ export default function Home() {
             <button className="back-button" onClick={() => setView("home")}><Icon name="back" size={18} /> Check another payment</button>
             <div className="result-heading">
               <span className="transaction-pill"><span>{merchant}</span><strong>₹{numericAmount.toLocaleString("en-IN")}</strong></span>
+              <div className="resolved-payment-context">
+                {purchaseCategory === "auto" && paymentIntent.categoryCandidates.length > 1
+                  ? <span><Icon name="shield" size={13}/>Same answer across the plausible purchase types</span>
+                  : <span><Icon name="check" size={13}/>{purchaseCategory === "auto" ? "Understood" : "Confirmed"}: {winner.category}</span>}
+                {paymentChannel === "auto" && possibleChannels.length > 1
+                  ? <span><Icon name="shield" size={13}/>Same answer across {possibleChannels.map((candidate) => candidate.label.toLowerCase()).join(", ")}</span>
+                  : <span><Icon name="check" size={13}/>{paymentChannel === "auto" ? "Understood" : "Confirmed"}: {winner.channel}</span>}
+              </div>
               <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No reward on this payment"}</span>
               <h1>{winner.eligible ? <>Use <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards won’t earn rewards here"}</h1>
               <p>{winner.eligible

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  analysePaymentIntent,
   evaluateCard,
   inferCategory,
   inferChannel,
@@ -23,6 +24,7 @@ function card(overrides: Partial<RecommendationCard> = {}, rewardModel: Partial<
 
 const categoryCases = [
   ["Swiggy order", "dining"],
+  ["Swiggy Instamart", "grocery"],
   ["Blinkit groceries", "grocery"],
   ["Flight tickets", "travel"],
   ["Hotel booking", "travel"],
@@ -48,7 +50,7 @@ const channelCases = [
   ["Google Pay electricity bill", "app"],
   ["Airtel Thanks broadband", "app"],
   ["Offline POS at store", "offline"],
-  ["Amazon purchase", "online"],
+  ["Amazon website purchase", "online"],
 ] as const;
 
 for (const [merchant, expected] of channelCases) {
@@ -56,6 +58,44 @@ for (const [merchant, expected] of channelCases) {
     assert.equal(inferChannel(merchant), expected);
   });
 }
+
+test("an unstated payment route remains unresolved instead of defaulting to online", () => {
+  assert.equal(inferChannel("Croma se TV"), "auto");
+  assert.equal(inferChannel("Lakme Salon"), "auto");
+});
+
+test("natural merchant input produces honest category and route candidates", () => {
+  const croma = analysePaymentIntent("Croma se TV 50k");
+  assert.deepEqual(croma.categoryCandidates.map((item) => item.value), ["shopping"]);
+  assert.deepEqual(croma.channelCandidates.map((item) => item.value), ["offline", "online", "app", "upi"]);
+
+  const salon = analysePaymentIntent("Lakme Salon");
+  assert.deepEqual(salon.categoryCandidates.map((item) => item.value), ["other"]);
+  assert.equal(salon.channelQuestion, "How will you pay for this salon visit?");
+});
+
+test("multi-service apps ask for the purchase type instead of inventing it", () => {
+  assert.deepEqual(
+    analysePaymentIntent("Swiggy").categoryCandidates.map((item) => item.value),
+    ["dining", "grocery"],
+  );
+  assert.deepEqual(
+    analysePaymentIntent("Swiggy Instamart").categoryCandidates.map((item) => item.value),
+    ["grocery"],
+  );
+  assert.deepEqual(
+    analysePaymentIntent("Amazon").categoryCandidates.map((item) => item.value),
+    ["shopping", "grocery", "travel", "utilities", "wallet"],
+  );
+});
+
+test("credit-card UPI excludes a non-RuPay card", () => {
+  const visa = card({ id: "visa", network: "VISA", baseRate: 5 });
+  const rupay = card({ id: "rupay", network: "RuPay", baseRate: 1 });
+  const ranked = rankCards([visa, rupay], { merchant: "QR payment", amount: 2000, category: "shopping", channel: "upi" });
+  assert.equal(ranked[0].card.id, "rupay");
+  assert.equal(ranked.find((item) => item.card.id === "visa")?.eligible, false);
+});
 
 for (const excludedCategory of ["fuel", "rent", "education", "insurance", "government", "wallet"] as const) {
   test(`exclusion returns zero for ${excludedCategory}`, () => {
@@ -187,7 +227,7 @@ test("auto selections are disclosed as assumptions", () => {
     card(),
     { merchant: "Swiggy", amount: 1000, category: "auto", channel: "auto" },
   );
-  assert.match(result.assumptions[0], /route auto-detected/);
+  assert.match(result.assumptions[0], /route was not stated/);
   assert.match(result.assumptions[1], /Category auto-detected/);
 });
 

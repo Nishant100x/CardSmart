@@ -120,11 +120,28 @@ export type CardOffer = {
 export type RecommendationCard = {
   id: string;
   bank?: string;
+  network?: string;
   baseRate: number;
   rates: Record<string, number>;
   merchantRates?: Record<string, number>;
   trackedValue: number;
   rewardModel: RewardModel;
+};
+
+export type PaymentIntentCandidate<T extends string> = {
+  value: T;
+  label: string;
+  description: string;
+};
+
+export type PaymentIntentAnalysis = {
+  rawText: string;
+  categoryCandidates: PaymentIntentCandidate<Exclude<PurchaseCategory, "auto">>[];
+  channelCandidates: PaymentIntentCandidate<Exclude<PaymentChannel, "auto">>[];
+  categoryQuestion: string;
+  channelQuestion: string;
+  categoryConfidence: "high" | "needs_confirmation";
+  channelConfidence: "high" | "needs_confirmation";
 };
 
 export type RecommendationInput = {
@@ -232,20 +249,113 @@ const CATEGORY_PATTERNS: Array<[Exclude<PurchaseCategory, "auto">, RegExp]> = [
   ["dining", /swiggy|zomato|restaurant|dinner|lunch|cafe|food|dineout/],
   ["grocery", /grocery|blinkit|zepto|bigbasket|dmart|instamart/],
   ["wallet", /wallet load|add money|paytm wallet|amazon pay balance/],
-  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|lakme/],
+  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|croma|chroma|vijay sales|reliance digital|cosmetic|makeup/],
 ];
 
 export function inferCategory(merchant: string): Exclude<PurchaseCategory, "auto"> {
   const text = merchant.trim().toLowerCase();
+  if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) return "grocery";
+  if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) return "dining";
+  if (/salon|haircut|hair cut|spa|beauty parlou?r/.test(text)) return "other";
   return CATEGORY_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
 }
 
-export function inferChannel(merchant: string): Exclude<PaymentChannel, "auto"> {
+export function inferChannel(merchant: string): PaymentChannel {
   const text = merchant.trim().toLowerCase();
   if (/\bupi\b|bhim|qr code|rupay upi/.test(text)) return "upi";
   if (/google pay|gpay|airtel thanks|tata neu app|smartbuy|travel edge|partner app/.test(text)) return "app";
   if (/offline|in.store|at store|pos\b|swipe|tap/.test(text)) return "offline";
-  return "online";
+  if (/online|website|web site|web-site|checkout page|e.?commerce/.test(text)) return "online";
+  return "auto";
+}
+
+const CATEGORY_LABELS: Record<Exclude<PurchaseCategory, "auto">, [string, string]> = {
+  dining: ["Food delivery or dining", "Restaurant, takeaway or delivered food"],
+  grocery: ["Groceries", "Groceries or everyday essentials"],
+  shopping: ["Shopping", "Products such as electronics, fashion or household items"],
+  travel: ["Travel", "Flights, hotels, trains or cabs"],
+  utilities: ["Bill or recharge", "Electricity, mobile, broadband, gas or DTH"],
+  fuel: ["Fuel", "Petrol, diesel or fuel-station payment"],
+  rent: ["Rent", "House rent or housing payment"],
+  education: ["Education", "School, college, tuition or course fee"],
+  insurance: ["Insurance", "Insurance premium payment"],
+  government: ["Government or tax", "Tax, challan or government payment"],
+  wallet: ["Wallet load", "Adding money to a wallet or stored balance"],
+  other: ["Other service", "Salon, professional service or another payment"],
+};
+
+const CHANNEL_LABELS: Record<Exclude<PaymentChannel, "auto">, [string, string]> = {
+  online: ["Card on a website", "Paying by card on the merchant website"],
+  offline: ["Card at the store", "Swiping, inserting or tapping the card in person"],
+  app: ["Card in an app", "Paying inside a merchant or partner app"],
+  upi: ["RuPay credit card via UPI", "Paying a merchant UPI ID or QR with an eligible RuPay credit card"],
+};
+
+function uniqueCandidates<T extends string>(values: T[], factory: (value: T) => PaymentIntentCandidate<T>) {
+  return [...new Set(values)].map(factory);
+}
+
+function categoryCandidate(value: Exclude<PurchaseCategory, "auto">) {
+  const labels = CATEGORY_LABELS[value];
+  return { value, label: labels[0], description: labels[1] };
+}
+
+function channelCandidate(value: Exclude<PaymentChannel, "auto">) {
+  const labels = CHANNEL_LABELS[value];
+  return { value, label: labels[0], description: labels[1] };
+}
+
+export function analysePaymentIntent(
+  rawText: string,
+  category: PurchaseCategory = "auto",
+  channel: PaymentChannel = "auto",
+): PaymentIntentAnalysis {
+  const text = rawText.trim().toLowerCase();
+  let categoryValues: Exclude<PurchaseCategory, "auto">[];
+  let categoryQuestion = "What is this payment for?";
+
+  if (category !== "auto") categoryValues = [category];
+  else if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) categoryValues = ["grocery"];
+  else if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) categoryValues = ["dining"];
+  else if (/swiggy/.test(text)) {
+    categoryValues = ["dining", "grocery"];
+    categoryQuestion = "What are you ordering on Swiggy?";
+  } else if (/amazon(?!\s+pay\s+(?:wallet|balance))/.test(text)
+    && !/fresh|grocery|groceries|flight|hotel|travel|bill|recharge|electricity|electronics|phone|mobile|fashion|shopping|product|wallet load|add money/.test(text)) {
+    categoryValues = ["shopping", "grocery", "travel", "utilities", "wallet"];
+    categoryQuestion = "What are you paying for on Amazon?";
+  } else if (/google pay|gpay|paytm|phonepe|amazon pay/.test(text) && inferCategory(text) === "other") {
+    categoryValues = ["utilities", "shopping", "wallet", "other"];
+    categoryQuestion = "What is the payment inside the app for?";
+  } else categoryValues = [inferCategory(text)];
+
+  let channelValues: Exclude<PaymentChannel, "auto">[];
+  let channelQuestion = "How will you make this payment?";
+  const explicitChannel = channel === "auto" ? inferChannel(text) : channel;
+  if (explicitChannel !== "auto") channelValues = [explicitChannel];
+  else if (/croma|chroma|vijay sales|reliance digital|salon|spa|store|mall/.test(text)) {
+    channelValues = ["offline", "online", "app", "upi"];
+    channelQuestion = /salon|spa/.test(text) ? "How will you pay for this salon visit?" : "Are you buying online or at the store?";
+  } else if (/swiggy|zomato|blinkit|zepto|instamart|amazon|flipkart|myntra|bigbasket/.test(text)) {
+    channelValues = ["app", "online", "upi"];
+    channelQuestion = "How will you pay at checkout?";
+  } else if (/flight|airline|hotel|travel|electricity|bill|recharge|broadband|insurance|premium|rent|school|college|course/.test(text)) {
+    channelValues = ["app", "online", "upi"];
+  } else if (/fuel|petrol|diesel|restaurant|cafe/.test(text)) {
+    channelValues = ["offline", "upi"];
+  } else channelValues = ["online", "offline", "app", "upi"];
+
+  const categoryCandidates = uniqueCandidates(categoryValues, categoryCandidate);
+  const channelCandidates = uniqueCandidates(channelValues, channelCandidate);
+  return {
+    rawText: rawText.trim(),
+    categoryCandidates,
+    channelCandidates,
+    categoryQuestion,
+    channelQuestion,
+    categoryConfidence: categoryCandidates.length === 1 ? "high" : "needs_confirmation",
+    channelConfidence: channelCandidates.length === 1 ? "high" : "needs_confirmation",
+  };
 }
 
 function rateForLegacyCategory(card: RecommendationCard, category: Exclude<PurchaseCategory, "auto">) {
@@ -433,14 +543,28 @@ export function evaluateCard<T extends RecommendationCard>(
   card: T, input: RecommendationInput, context: EvaluationContext = {},
 ): RecommendationResult<T> {
   const category = input.category === "auto" ? inferCategory(input.merchant) : input.category;
-  const channel = input.channel === "auto" ? inferChannel(input.merchant) : input.channel;
+  const inferredChannel = input.channel === "auto" ? inferChannel(input.merchant) : input.channel;
+  const channel: Exclude<PaymentChannel, "auto"> = inferredChannel === "auto" ? "online" : inferredChannel;
   const model = card.rewardModel;
   const valueMode = context.rewardValueMode ?? "standard";
   const preference = context.redemptionPreference ?? "balanced";
   const milestones = milestoneProgress(card.id, model, input, category, context);
   const assumptions = [...(model.assumptions ?? [])];
   if (input.category === "auto") assumptions.unshift(`Category auto-detected as ${category}.`);
-  if (input.channel === "auto") assumptions.unshift(`Payment route auto-detected as ${channel}.`);
+  if (input.channel === "auto" && inferredChannel !== "auto") assumptions.unshift(`Payment route auto-detected as ${channel}.`);
+  if (input.channel === "auto" && inferredChannel === "auto") assumptions.unshift("Payment route was not stated; the online route is shown only as a provisional estimate.");
+
+  if (channel === "upi" && card.network && card.network !== "RuPay") {
+    return {
+      card, category, channel, rate: 0, grossValue: 0, baseValue: 0, offerValue: 0, value: 0,
+      standardValue: 0, optimisedValue: 0, rewardUnits: null, rewardUnitLabel: null,
+      standardRedemption: null, optimisedRedemption: null, valueMode, offersApplied: [],
+      selectedRedemption: null, redemptionValues: [], bestKnownRedemptionValue: 0, milestoneProgress: milestones,
+      capAmount: null, capRemaining: null, capAdjustment: 0, eligible: false,
+      ruleLabel: "Credit-card UPI requires an eligible RuPay card",
+      confidence: model.confidence, assumptions,
+    };
+  }
 
   if (model.exclusions?.includes(category)) {
     const offersApplied = applicableOffers(card, input, category, channel, context);

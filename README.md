@@ -1,5 +1,14 @@
 # CardSmart V10.11 — Redemption Intelligence
 
+## V10.11.1 natural payment resolution patch
+
+- Accepts ordinary payment descriptions such as `Croma se TV`, `Lakme Salon`, `Swiggy Instamart` and `electricity bill` without expecting users to know CardSmart's internal category or route labels.
+- Keeps an unstated payment route unresolved instead of silently treating it as online.
+- Evaluates plausible category and payment-route scenarios and asks one inline question only when the winning card, value, rule or offer can change.
+- Shows the likely outcome behind every clarification choice so the reason for asking is visible.
+- Separates confirmed choices from inferred context in the result and discloses when the answer is stable across plausible routes.
+- Prevents non-RuPay cards from being recommended for credit-card UPI payments.
+
 ## V10.11 decision release (August 2026)
 
 - Replaces the narrow standard-versus-optimised abstraction with named redemption routes: statement credit, vouchers, products, issuer travel portals and partner transfers.

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const engine = readFileSync(new URL("../src/recommendationEngine.ts", import.meta.url), "utf8");
 const repository = readFileSync(new URL("../src/catalogueRepository.ts", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 const monitor = readFileSync(new URL("../supabase/functions/card-monitor/index.ts", import.meta.url), "utf8");
@@ -103,4 +104,16 @@ test("redemption options and milestone progress are first-class product decision
   assert.match(redemptionSql, /reward_redemption_routes/);
   assert.match(redemptionSql, /card_milestones/);
   assert.match(redemptionSql, /monthly_eligible_spend/);
+});
+
+test("natural payment input asks only when ambiguity changes the recommendation", () => {
+  assert.match(engine, /analysePaymentIntent/);
+  assert.match(engine, /return "auto"/);
+  assert.match(engine, /Credit-card UPI requires an eligible RuPay card/);
+  assert.match(source, /decisionClarification/);
+  assert.match(source, /One detail changes the answer/);
+  assert.match(source, /We won’t silently assume a route/);
+  assert.match(source, /requestSubmit/);
+  assert.match(css, /\.payment-clarification/);
+  assert.match(css, /\.resolved-payment-context/);
 });
