@@ -7,6 +7,12 @@ import { loadPublishedCatalog } from "./catalogueRepository";
 import type { CardData, DiscoveryMeta } from "./catalogueData";
 import { FALLBACK_MERCHANT_DIRECTORY } from "./merchantDirectory";
 import {
+  decisionTrust,
+  reliabilitySessionId,
+  safeEventMetadata,
+  type ReliabilityEventName,
+} from "./reliability";
+import {
   analysePaymentIntent,
   confidenceLabel,
   evaluateCard,
@@ -106,6 +112,17 @@ type LedgerDraft = {
   annualEligibleSpend: string;
   qualifyingTransactions: string;
 };
+
+type FeedbackMode = "idle" | "confirmed" | "correcting" | "corrected" | "reported" | "alternative";
+
+type FeedbackDraft = {
+  merchant: string;
+  category: PurchaseCategory;
+  paymentChannel: PaymentChannel;
+};
+
+type FeedbackVerdict = "correct" | "incorrect" | "corrected" | "alternative_used";
+type FeedbackIssue = "intent" | "reward_or_offer" | "card_choice" | null;
 
 type ProfileRow = {
   name: string | null;
@@ -928,6 +945,12 @@ export default function Home() {
   const [activityFilter, setActivityFilter] = useState<"all" | "tracked" | "checked">("all");
   const [interactionSaving, setInteractionSaving] = useState(false);
   const [currentInteractionId, setCurrentInteractionId] = useState<string | null>(null);
+  const [feedbackMode, setFeedbackMode] = useState<FeedbackMode>("idle");
+  const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>({ merchant: "", category: "other", paymentChannel: "online" });
+  const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  const [alternativeCardId, setAlternativeCardId] = useState("");
+  const [alternativeOpen, setAlternativeOpen] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const signedIn = Boolean(authUser);
   const [authOpen, setAuthOpen] = useState(false);
@@ -947,8 +970,29 @@ export default function Home() {
   const activityLoadRequestRef = useRef(0);
   const profileLoadRequestRef = useRef(0);
   const guestSessionRestoredRef = useRef(false);
+  const reliabilitySessionRef = useRef<string | null>(null);
   const paymentFormRef = useRef<HTMLFormElement>(null);
   const completeAccountActionRef = useRef<(action?: typeof pendingAction, signedInUserId?: string) => Promise<void>>(async () => {});
+
+  if (!reliabilitySessionRef.current) reliabilitySessionRef.current = reliabilitySessionId();
+
+  const trackProductEvent = useCallback(async (
+    eventName: ReliabilityEventName,
+    metadata: Record<string, unknown> = {},
+  ) => {
+    if (!isSupabaseConfigured || !reliabilitySessionRef.current) return;
+    await supabase.from("product_events").insert({
+      session_id: reliabilitySessionRef.current,
+      user_id: authUser?.id ?? null,
+      event_name: eventName,
+      view_name: view,
+      metadata: safeEventMetadata(metadata),
+    });
+  }, [authUser?.id, view]);
+
+  useEffect(() => {
+    void trackProductEvent("screen_viewed", { screen: view, signed_in: Boolean(authUser) });
+  }, [authUser, trackProductEvent, view]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -1172,6 +1216,11 @@ export default function Home() {
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
+  const resultTrust = winner ? decisionTrust(
+    winner.confidence,
+    paymentIntent.overallConfidence,
+    Boolean(winner.card.rewardModel.sourceUrls?.length),
+  ) : null;
   const preferenceLeaders = (["cash", "shopping", "travel"] as RedemptionPreference[]).flatMap((preference) => {
     const result = rankCards(walletCards, {
       merchant: calculationMerchant,
@@ -1282,6 +1331,11 @@ export default function Home() {
     setActivity((current) => [savedActivity, ...current.filter((item) => item.id !== savedActivity.id)]);
     setCurrentInteractionId(savedActivity.id);
     if (status === "tracked") {
+      void trackProductEvent("recommendation_followed", {
+        recommended_card_id: winner.card.id,
+        rule_confidence: winner.confidence,
+        intent_confidence: paymentIntent.overallConfidence,
+      });
       setConfirmed(true);
       const ledger = walletRows[winner.card.id];
       const pointsBalance = ledger?.points_balance === null || ledger?.points_balance === undefined
@@ -1305,7 +1359,104 @@ export default function Home() {
       if (!ledgerError) setWalletRows((current) => ({ ...current, [winner.card.id]: { ...current[winner.card.id], ...ledgerUpdate } as WalletRow }));
     }
     return true;
-  }, [calculationMerchant, merchant, numericAmount, paymentChannel, paymentIntent, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, walletRows, winner]);
+  }, [calculationMerchant, merchant, numericAmount, paymentChannel, paymentIntent, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, trackProductEvent, walletRows, winner]);
+
+  const persistRecommendationFeedback = useCallback(async (
+    verdict: FeedbackVerdict,
+    issueType: FeedbackIssue,
+    correction?: FeedbackDraft,
+    usedCardId?: string,
+  ) => {
+    if (!winner || !reliabilitySessionRef.current) return false;
+    setFeedbackSaving(true);
+    setFeedbackError("");
+
+    if (isSupabaseConfigured) {
+      const { error } = await supabase.from("recommendation_feedback").insert({
+        session_id: reliabilitySessionRef.current,
+        user_id: authUser?.id ?? null,
+        interaction_id: currentInteractionId,
+        verdict,
+        issue_type: issueType,
+        merchant_text: merchant.trim().slice(0, 240),
+        canonical_merchant: calculationMerchant.trim().slice(0, 240),
+        category: winner.category,
+        payment_channel: winner.channel,
+        recommended_card_id: winner.card.id,
+        used_card_id: usedCardId ?? null,
+        correction_merchant: correction?.merchant.trim().slice(0, 240) || null,
+        correction_category: correction?.category ?? null,
+        correction_payment_channel: correction?.paymentChannel ?? null,
+        rule_confidence: winner.confidence,
+        intent_confidence: paymentIntent.overallConfidence,
+      });
+      if (error) {
+        setFeedbackSaving(false);
+        setFeedbackError("Your feedback could not be saved. Please try again.");
+        return false;
+      }
+    }
+
+    const eventName: ReliabilityEventName = verdict === "correct"
+      ? "intent_confirmed"
+      : verdict === "corrected"
+        ? "intent_corrected"
+        : verdict === "alternative_used"
+          ? "alternative_card_used"
+          : "reward_issue_reported";
+    void trackProductEvent(eventName, {
+      recommended_card_id: winner.card.id,
+      used_card_id: usedCardId,
+      rule_confidence: winner.confidence,
+      intent_confidence: paymentIntent.overallConfidence,
+      corrected_category: correction?.category,
+      corrected_channel: correction?.paymentChannel,
+    });
+    setFeedbackSaving(false);
+    return true;
+  }, [authUser?.id, calculationMerchant, currentInteractionId, merchant, paymentIntent.overallConfidence, trackProductEvent, winner]);
+
+  const confirmPaymentUnderstanding = async () => {
+    if (await persistRecommendationFeedback("correct", null)) setFeedbackMode("confirmed");
+  };
+
+  const openPaymentCorrection = () => {
+    if (!winner) return;
+    setFeedbackDraft({ merchant, category: winner.category, paymentChannel: winner.channel });
+    setFeedbackMode("correcting");
+    setFeedbackError("");
+  };
+
+  const applyPaymentCorrection = async () => {
+    if (!feedbackDraft.merchant.trim()) {
+      setFeedbackError("Enter the merchant or purchase before recalculating.");
+      return;
+    }
+    if (!await persistRecommendationFeedback("corrected", "intent", feedbackDraft)) return;
+    setMerchant(feedbackDraft.merchant.trim());
+    setMerchantResolution(null);
+    setPurchaseCategory(feedbackDraft.category);
+    setPaymentChannel(feedbackDraft.paymentChannel);
+    setCurrentInteractionId(null);
+    setConfirmed(false);
+    setFeedbackMode("corrected");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const reportRewardIssue = async () => {
+    if (await persistRecommendationFeedback("incorrect", "reward_or_offer")) setFeedbackMode("reported");
+  };
+
+  const recordAlternativeCard = async () => {
+    if (!alternativeCardId) {
+      setFeedbackError("Choose the card you actually used.");
+      return;
+    }
+    if (await persistRecommendationFeedback("alternative_used", "card_choice", undefined, alternativeCardId)) {
+      setFeedbackMode("alternative");
+      setAlternativeOpen(false);
+    }
+  };
 
   const submitPayment = (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -1317,12 +1468,24 @@ export default function Home() {
       setFormError("Enter a valid payment amount.");
       return;
     }
+    void trackProductEvent("payment_started", {
+      wallet_count: walletIds.length,
+      category_input: purchaseCategory,
+      channel_input: paymentChannel,
+      intent_confidence: paymentIntent.overallConfidence,
+    });
     if (!walletIds.length) {
+      void trackProductEvent("wallet_required", { source: "payment" });
       setFormError("");
       openWalletPicker();
       return;
     }
     if (decisionClarification) {
+      void trackProductEvent("clarification_shown", {
+        field: decisionClarification.field,
+        option_count: decisionClarification.options.length,
+        intent_confidence: paymentIntent.overallConfidence,
+      });
       setFormError("");
       setClarificationRequested(true);
       window.setTimeout(() => document.getElementById("payment-clarification")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
@@ -1333,12 +1496,26 @@ export default function Home() {
     setActivityError("");
     setConfirmed(false);
     setCurrentInteractionId(null);
+    setFeedbackMode("idle");
+    setFeedbackError("");
+    setAlternativeCardId("");
+    setAlternativeOpen(false);
     setView("result");
+    if (winner) void trackProductEvent("recommendation_viewed", {
+      recommended_card_id: winner.card.id,
+      rule_confidence: winner.confidence,
+      intent_confidence: paymentIntent.overallConfidence,
+      offer_applied: winner.offerValue > 0,
+    });
     if (authUser) void persistInteraction(authUser.id, "checked");
     window.scrollTo({ top: 0, behavior: "auto" });
   };
 
   const chooseClarification = (field: "merchant" | "category" | "channel", value: string) => {
+    void trackProductEvent("clarification_answered", {
+      field,
+      selected_value: field === "merchant" ? "merchant_candidate" : value,
+    });
     if (field === "merchant") {
       setMerchant(value);
       setMerchantResolution(value);
@@ -1355,6 +1532,7 @@ export default function Home() {
     setPurchaseCategory("auto");
     setPaymentChannel("auto");
     setClarificationRequested(false);
+    setFeedbackMode("idle");
     setFormError("");
   };
 
@@ -1365,6 +1543,7 @@ export default function Home() {
     setPurchaseCategory("auto");
     setPaymentChannel("auto");
     setClarificationRequested(false);
+    setFeedbackMode("idle");
     setFormError("");
   };
 
@@ -1384,6 +1563,9 @@ export default function Home() {
     setClarificationRequested(false);
     setCurrentInteractionId(null);
     setConfirmed(false);
+    setFeedbackMode("idle");
+    setAlternativeCardId("");
+    setAlternativeOpen(false);
     setFormError("");
     setView("home");
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -1529,6 +1711,7 @@ export default function Home() {
     }
     const saved = await persistWallet(authUser.id, nextIds);
     if (saved) {
+      void trackProductEvent("wallet_saved", { card_count: nextIds.length });
       setPickerOpen(false);
       setAuthNotice(nextIds.length ? "Wallet saved. Your cards now stay in sync." : "Wallet cleared.");
     }
@@ -1949,6 +2132,7 @@ export default function Home() {
   const changeRedemptionPreference = async (preference: RedemptionPreference) => {
     setProfile((current) => ({ ...current, redemptionPreference: preference }));
     window.localStorage.setItem("cardsmart-redemption-preference", preference);
+    void trackProductEvent("redemption_preference_updated", { preference });
     if (!authUser) return;
     const { error } = await supabase.from("profiles").update({ redemption_preference: preference }).eq("id", authUser.id);
     if (error) setProfileError("Your reward-use preference could not be saved. The current result has still been updated.");
@@ -2364,6 +2548,7 @@ export default function Home() {
                   ? <span><Icon name="shield" size={13}/>Same answer across {possibleChannels.map((candidate) => candidate.label.toLowerCase()).join(", ")}</span>
                   : <span><Icon name="check" size={13}/>{paymentChannel === "auto" ? "Understood" : "Confirmed"}: {winner.channel}</span>}
               </div>
+              {resultTrust && <div className={`decision-trust decision-trust--${resultTrust.level}`}><Icon name={resultTrust.level === "high" ? "shield" : "info"} size={16}/><div><strong>{resultTrust.label}</strong><span>{resultTrust.explanation}</span></div></div>}
               <span className="eyebrow">{winner.eligible ? "Best card for this payment" : "No reward on this payment"}</span>
               <h1>{winner.eligible ? <>Use <span>{shortBankName(winner.card.bank)} {winner.card.name}</span></> : "Your cards won’t earn rewards here"}</h1>
               <p>{winner.eligible
@@ -2469,10 +2654,38 @@ export default function Home() {
               </div>
             </section>
 
+            <section className="result-feedback" aria-live="polite">
+              {feedbackMode === "correcting" ? (
+                <>
+                  <div className="result-feedback-heading"><div><span className="mini-label">Correct the interpretation</span><h2>What should CardSmart use instead?</h2><p>The corrected details recalculate this result. They go to a review queue and never rewrite global reward rules automatically.</p></div></div>
+                  <div className="feedback-correction-grid">
+                    <label><span>Merchant or purchase</span><input value={feedbackDraft.merchant} onChange={(event) => setFeedbackDraft({...feedbackDraft, merchant:event.target.value})}/></label>
+                    <label><span>Purchase category</span><select value={feedbackDraft.category} onChange={(event) => setFeedbackDraft({...feedbackDraft, category:event.target.value as PurchaseCategory})}><option value="dining">Dining / food delivery</option><option value="grocery">Groceries</option><option value="shopping">Shopping</option><option value="travel">Travel</option><option value="utilities">Utilities / recharge</option><option value="fuel">Fuel</option><option value="rent">Rent</option><option value="education">Education</option><option value="insurance">Insurance</option><option value="government">Government / tax</option><option value="wallet">Wallet load</option><option value="other">Other</option></select></label>
+                    <label><span>Payment route</span><select value={feedbackDraft.paymentChannel} onChange={(event) => setFeedbackDraft({...feedbackDraft, paymentChannel:event.target.value as PaymentChannel})}><option value="online">Online card payment</option><option value="offline">In-store card payment</option><option value="upi">UPI with RuPay card</option><option value="app">Required app / partner checkout</option></select></label>
+                  </div>
+                  <div className="feedback-actions"><button className="primary-button" disabled={feedbackSaving} onClick={() => void applyPaymentCorrection()}>{feedbackSaving ? "Saving…" : "Recalculate with these details"} {!feedbackSaving && <Icon name="arrow"/>}</button><button className="secondary-button" disabled={feedbackSaving} onClick={() => setFeedbackMode("idle")}>Cancel</button></div>
+                </>
+              ) : feedbackMode === "confirmed" ? (
+                <div className="feedback-recorded"><span><Icon name="check"/></span><div><strong>Interpretation confirmed</strong><p>This helps measure where CardSmart is reliable without changing the underlying reward rules.</p></div></div>
+              ) : feedbackMode === "corrected" ? (
+                <div className="feedback-recorded"><span><Icon name="check"/></span><div><strong>Correction applied</strong><p>The recommendation has been recalculated using your confirmed category and payment route.</p></div></div>
+              ) : feedbackMode === "reported" ? (
+                <div className="feedback-recorded feedback-recorded--warning"><span><Icon name="info"/></span><div><strong>Issue sent for review</strong><p>Do not rely on the displayed reward or offer until the source rule is checked.</p></div></div>
+              ) : feedbackMode === "alternative" ? (
+                <div className="feedback-recorded"><span><Icon name="check"/></span><div><strong>Your actual card choice was recorded</strong><p>CardSmart will use this outcome to measure recommendation acceptance, not to inflate tracked savings.</p></div></div>
+              ) : (
+                <>
+                  <div className="result-feedback-heading"><div><span className="mini-label">Quick accuracy check</span><h2>Did we understand this payment correctly?</h2><p>{calculationMerchant} · {winner.category} · {winner.channel}</p></div></div>
+                  <div className="feedback-actions"><button className="feedback-choice feedback-choice--positive" disabled={feedbackSaving} onClick={() => void confirmPaymentUnderstanding()}><Icon name="check"/> Yes, this is right</button><button className="feedback-choice" disabled={feedbackSaving} onClick={openPaymentCorrection}><Icon name="edit"/> Fix the details</button><button className="feedback-choice feedback-choice--warning" disabled={feedbackSaving} onClick={() => void reportRewardIssue()}><Icon name="info"/> Reward or offer looks wrong</button></div>
+                </>
+              )}
+              {feedbackError && <p className="feedback-error"><Icon name="info" size={15}/>{feedbackError}</p>}
+            </section>
+
             <section className="result-actions">
               {confirmed ? (
                 <div className="confirmed-state"><span><Icon name="check" /></span><div><strong>Payment saved</strong><p>We’ll remember the reward so your next answer stays accurate.</p></div></div>
-              ) : (
+              ) : feedbackMode !== "alternative" ? (
                 <button
                   className="primary-button"
                   disabled={interactionSaving}
@@ -2482,7 +2695,9 @@ export default function Home() {
                 >
                   {interactionSaving ? "Saving…" : signedIn ? "I used this card" : "Save this result"} {!interactionSaving && <Icon name={signedIn ? "check" : "arrow"} />}
                 </button>
-              )}
+              ) : null}
+              {!confirmed && feedbackMode !== "alternative" && walletCards.length > 1 && <button className="secondary-button" onClick={() => { setAlternativeOpen((current) => !current); setFeedbackError(""); }}>{alternativeOpen ? "Cancel other card" : "I used another card"}</button>}
+              {alternativeOpen && !confirmed && <div className="alternative-card-form"><label><span>Which card did you use?</span><select value={alternativeCardId} onChange={(event) => setAlternativeCardId(event.target.value)}><option value="">Choose from your wallet</option>{walletCards.filter((card) => card.id !== winner.card.id).map((card) => <option value={card.id} key={card.id}>{card.bank} {card.name}</option>)}</select></label><button className="primary-button" disabled={feedbackSaving || !alternativeCardId} onClick={() => void recordAlternativeCard()}>{feedbackSaving ? "Saving…" : "Record my choice"}</button></div>}
               <button className="secondary-button" onClick={() => setView("home")}>Check another payment</button>
             </section>
             {activityError && <p className="profile-form-error"><Icon name="info" size={15}/>{activityError}</p>}

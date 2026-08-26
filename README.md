@@ -1,4 +1,18 @@
-# CardSmart V10.12 — Payment Intent Resolution
+# CardSmart V10.13 — Decision Reliability & Beta Loop
+
+## V10.13 reliability release
+
+- Adds an always-visible decision-confidence label based on payment-intent confidence, reward-rule confidence and issuer-source availability.
+- Asks users to confirm or correct the interpreted merchant, category and payment route on every result.
+- Recalculates immediately from corrected details while sending corrections to a review queue; corrections never auto-publish merchant, offer or reward rules.
+- Lets users report a questionable reward/offer and clearly warns them not to rely on it until reviewed.
+- Separates “I used this card” from “I used another card” so tracked savings are not inflated by rejected recommendations.
+- Adds privacy-minimised product-funnel events for payment starts, clarifications, recommendations, acceptance and corrections.
+- Splits React and Supabase vendor code into stable build chunks for better caching and removes the single oversized application-chunk bottleneck.
+
+### V10.13 database activation
+
+Run `supabase/decision-reliability-v10.13.sql` after the V10.12 migration. It creates write-only client analytics, explicit recommendation feedback, strict RLS policies and a private daily reliability view. Use `supabase/decision-reliability-verify-v10.13.sql` for the owner-only beta dashboard. See `docs/decision-reliability-audit-v10.13.md` for the beta metrics and privacy boundary.
 
 ## V10.12 merchant and intent resolution
 

@@ -11,6 +11,8 @@ const monitoringSql = readFileSync(new URL("../supabase/card-monitoring-setup.sq
 const rewardsSql = readFileSync(new URL("../supabase/rewards-truth-layer-v10.10.sql", import.meta.url), "utf8");
 const redemptionSql = readFileSync(new URL("../supabase/redemption-intelligence-v10.11.sql", import.meta.url), "utf8");
 const intentSql = readFileSync(new URL("../supabase/payment-intent-resolution-v10.12.sql", import.meta.url), "utf8");
+const reliabilitySql = readFileSync(new URL("../supabase/decision-reliability-v10.13.sql", import.meta.url), "utf8");
+const reliability = readFileSync(new URL("../src/reliability.ts", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -131,4 +133,17 @@ test("V10.12 resolves arbitrary language without moving reward maths into langua
   assert.match(intentSql, /merchant_directory/);
   assert.match(intentSql, /Published merchant directory is public/);
   assert.doesNotMatch(engine, /fetch\(|openai|anthropic|gemini/i);
+});
+
+test("V10.13 closes the recommendation reliability loop without auto-publishing corrections", () => {
+  assert.match(source, /Did we understand this payment correctly\?/);
+  assert.match(source, /Fix the details/);
+  assert.match(source, /Reward or offer looks wrong/);
+  assert.match(source, /I used another card/);
+  assert.match(source, /recommendation_feedback/);
+  assert.match(source, /product_events/);
+  assert.match(reliability, /decisionTrust/);
+  assert.match(reliabilitySql, /cardsmart_reliability_daily/);
+  assert.match(reliabilitySql, /Corrections are review inputs and never auto-publish/);
+  assert.doesNotMatch(reliabilitySql, /update\s+public\.(merchant_directory|card_versions|card_offers)/i);
 });
