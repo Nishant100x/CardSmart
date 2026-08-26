@@ -5,6 +5,7 @@ import type { User } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "./supabase";
 import { loadPublishedCatalog } from "./catalogueRepository";
 import type { CardData, DiscoveryMeta } from "./catalogueData";
+import { FALLBACK_MERCHANT_DIRECTORY } from "./merchantDirectory";
 import {
   analysePaymentIntent,
   confidenceLabel,
@@ -12,6 +13,7 @@ import {
   merchantClarificationCandidates,
   rankCards,
   type CardOffer,
+  type MerchantEntity,
   type PaymentChannel,
   type PurchaseCategory,
   type RecommendationResult,
@@ -887,6 +889,7 @@ export default function Home() {
   const [catalog, setCatalog] = useState<CardData[]>(FALLBACK_CATALOG);
   const [discoveryMeta, setDiscoveryMeta] = useState<Record<string, DiscoveryMeta>>(FALLBACK_DISCOVERY_META);
   const [offers, setOffers] = useState<CardOffer[]>(FALLBACK_OFFERS);
+  const [merchantDirectory, setMerchantDirectory] = useState<MerchantEntity[]>(FALLBACK_MERCHANT_DIRECTORY);
   const [catalogReady, setCatalogReady] = useState(!isSupabaseConfigured);
   const [merchant, setMerchant] = useState("Swiggy");
   const [amount, setAmount] = useState("2000");
@@ -962,6 +965,7 @@ export default function Home() {
         )));
         setDiscoveryMeta(snapshot.discoveryMeta);
         setOffers(snapshot.offers.length ? snapshot.offers : FALLBACK_OFFERS);
+        setMerchantDirectory(snapshot.merchants.length ? snapshot.merchants : FALLBACK_MERCHANT_DIRECTORY);
       } catch {
         // The bundled snapshot keeps the product usable during a transient
         // catalogue outage. Supabase remains the primary source on every load.
@@ -1047,9 +1051,10 @@ export default function Home() {
   const upgradeResult = exploreMode === "compare" ? consideredUpgradeResult : discoveryUpgradeResult;
   const numericAmount = Number(amount.replace(/,/g, "")) || 0;
   const paymentIntent = useMemo(
-    () => analysePaymentIntent(merchant, purchaseCategory, paymentChannel),
-    [merchant, paymentChannel, purchaseCategory],
+    () => analysePaymentIntent(merchant, purchaseCategory, paymentChannel, merchantDirectory),
+    [merchant, merchantDirectory, paymentChannel, purchaseCategory],
   );
+  const calculationMerchant = paymentIntent.merchantResolution?.displayName ?? merchant;
   const possibleChannels = useMemo(() => {
     const hasRupayCard = walletCards.some((card) => card.network === "RuPay");
     const filtered = paymentIntent.channelCandidates.filter((candidate) => candidate.value !== "upi" || hasRupayCard || paymentChannel === "upi");
@@ -1081,7 +1086,7 @@ export default function Home() {
   const paymentScenarios = useMemo(() => paymentIntent.categoryCandidates.flatMap((categoryCandidate) => (
     possibleChannels.map((channelCandidate) => {
       const scenarioRanked = rankCards(walletCards, {
-        merchant,
+        merchant: calculationMerchant,
         amount: numericAmount,
         category: categoryCandidate.value,
         channel: channelCandidate.value,
@@ -1093,7 +1098,7 @@ export default function Home() {
         fingerprint: decisionFingerprint(scenarioRanked[0]),
       };
     })
-  )), [merchant, numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, rewardLedgers, walletCards]);
+  )), [calculationMerchant, numericAmount, offers, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, rewardLedgers, walletCards]);
   const decisionClarification = useMemo(() => {
     if (possibleMerchants.length > 1) {
       const options = possibleMerchants.map((candidate) => {
@@ -1158,18 +1163,18 @@ export default function Home() {
   }, [merchant, merchantPaymentScenarios, paymentChannel, paymentIntent, paymentScenarios, possibleChannels, possibleMerchants, purchaseCategory]);
   const ranked = useMemo(
     () => rankCards(walletCards, {
-      merchant,
+      merchant: calculationMerchant,
       amount: numericAmount,
       category: purchaseCategory,
       channel: paymentChannel,
     }, { offers, rewardValueMode: "standard", redemptionPreference: profile.redemptionPreference, ledgers: rewardLedgers }),
-    [merchant, numericAmount, offers, paymentChannel, profile.redemptionPreference, purchaseCategory, rewardLedgers, walletCards]
+    [calculationMerchant, numericAmount, offers, paymentChannel, profile.redemptionPreference, purchaseCategory, rewardLedgers, walletCards]
   );
   const winner = ranked[0];
   const runnerUp = ranked[1];
   const preferenceLeaders = (["cash", "shopping", "travel"] as RedemptionPreference[]).flatMap((preference) => {
     const result = rankCards(walletCards, {
-      merchant,
+      merchant: calculationMerchant,
       amount: numericAmount,
       category: purchaseCategory,
       channel: paymentChannel,
@@ -1227,8 +1232,13 @@ export default function Home() {
         reason: `${winner.card.bank} ${winner.card.name} gives the highest estimated eligible return for this payment among the cards in your wallet after applying the selected category, payment route, exclusions and known cap usage.`,
         full_response: {
           merchant: merchant.trim(),
+          canonical_merchant: calculationMerchant.trim(),
           amount: numericAmount,
           payment_intent: {
+            raw_text: merchant.trim(),
+            normalized_text: paymentIntent.normalizedText,
+            overall_confidence: paymentIntent.overallConfidence,
+            merchant_resolution: paymentIntent.merchantResolution,
             category_input: purchaseCategory,
             payment_channel_input: paymentChannel,
             category_candidates: paymentIntent.categoryCandidates.map((candidate) => candidate.value),
@@ -1295,7 +1305,7 @@ export default function Home() {
       if (!ledgerError) setWalletRows((current) => ({ ...current, [winner.card.id]: { ...current[winner.card.id], ...ledgerUpdate } as WalletRow }));
     }
     return true;
-  }, [merchant, numericAmount, paymentChannel, paymentIntent.categoryCandidates, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, walletRows, winner]);
+  }, [calculationMerchant, merchant, numericAmount, paymentChannel, paymentIntent, possibleChannels, profile.redemptionPreference, purchaseCategory, runnerUp, walletRows, winner]);
 
   const submitPayment = (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -2345,6 +2355,8 @@ export default function Home() {
             <div className="result-heading">
               <span className="transaction-pill"><span>{merchant}</span><strong>₹{numericAmount.toLocaleString("en-IN")}</strong></span>
               <div className="resolved-payment-context">
+                {paymentIntent.merchantResolution && paymentIntent.merchantResolution.displayName.toLowerCase() !== merchant.trim().toLowerCase()
+                  && <span><Icon name="search" size={13}/>Matched merchant: {paymentIntent.merchantResolution.displayName}</span>}
                 {purchaseCategory === "auto" && paymentIntent.categoryCandidates.length > 1
                   ? <span><Icon name="shield" size={13}/>Same answer across the plausible purchase types</span>
                   : <span><Icon name="check" size={13}/>{purchaseCategory === "auto" ? "Understood" : "Confirmed"}: {winner.category}</span>}

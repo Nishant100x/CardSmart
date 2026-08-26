@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parsePublishedCatalogRows, parsePublishedOfferRows } from "../src/catalogueData.ts";
+import { parsePublishedCatalogRows, parsePublishedMerchantRows, parsePublishedOfferRows } from "../src/catalogueData.ts";
 
 test("published Supabase rows become recommendation cards and discovery metadata", () => {
   const result = parsePublishedCatalogRows([{
@@ -46,6 +46,7 @@ test("published Supabase rows become recommendation cards and discovery metadata
     goals: ["Simple cashback"],
   });
   assert.deepEqual(result.offers, []);
+  assert.deepEqual(result.merchants, []);
 });
 
 test("malformed rows are rejected instead of corrupting the live catalogue", () => {
@@ -54,7 +55,23 @@ test("malformed rows are rejected instead of corrupting the live catalogue", () 
     { id: "missing-name", issuer: "Test Bank", card_versions: [{ reward_model: {} }] },
   ]);
 
-  assert.deepEqual(result, { cards: [], discoveryMeta: {}, offers: [] });
+  assert.deepEqual(result, { cards: [], discoveryMeta: {}, offers: [], merchants: [] });
+});
+
+test("published merchant aliases become a validated intent directory", () => {
+  const merchants = parsePublishedMerchantRows([{
+    merchant_key: "croma",
+    display_name: "Croma",
+    aliases: ["croma", "chroma"],
+    category_candidates: ["shopping", "not-a-category"],
+    channel_candidates: ["offline", "online", "not-a-channel"],
+    confidence: "verified",
+    source_url: "https://www.croma.com/",
+  }]);
+  assert.equal(merchants.length, 1);
+  assert.deepEqual(merchants[0].categoryCandidates, ["shopping"]);
+  assert.deepEqual(merchants[0].channelCandidates, ["offline", "online"]);
+  assert.equal(merchants[0].confidence, "verified");
 });
 
 test("published offers are parsed as a separate, expiring calculation layer", () => {

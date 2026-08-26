@@ -1,4 +1,19 @@
-# CardSmart V10.11 — Redemption Intelligence
+# CardSmart V10.12 — Payment Intent Resolution
+
+## V10.12 merchant and intent resolution
+
+- Accepts any non-empty payment description and refuses to silently classify a completely unknown phrase as online shopping or a generic service.
+- Normalizes selected spelling mistakes, abbreviations and Hinglish payment language such as `Lkame saloon`, `bijli ka bill`, `ration aur sabzi` and `ghar ka kiraya`.
+- Resolves exact and close merchant aliases against a published Supabase merchant directory with a bundled continuity fallback.
+- Keeps canonical merchant resolution separate from the user’s original text and records the match method, score and confidence in saved interaction metadata.
+- Uses the canonical merchant to find published rules and offers, while all reward maths remains deterministic.
+- For unknown merchants, compares every supported category and route and asks only when the user’s answer changes the winning card, value, rule, redemption or offer.
+
+### V10.12 database activation
+
+Run `supabase/payment-intent-resolution-v10.12.sql` after the V10.11 migration. The script creates a publicly readable, write-protected published merchant directory and seeds 35 reviewed Indian merchants and payment surfaces.
+
+The runtime does not use a language model to calculate rewards. See `docs/payment-intent-resolution-audit-v10.12.md` for the safety contract and deliberate limits.
 
 ## V10.11.2 natural payment resolution patch
 

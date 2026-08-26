@@ -7,11 +7,14 @@ import {
   inferChannel,
   isGenericMerchantInput,
   merchantClarificationCandidates,
+  normalizePaymentText,
   rankCards,
+  resolveMerchantEntity,
   type CardOffer,
   type RecommendationCard,
   type RewardModel,
 } from "../src/recommendationEngine.ts";
+import { FALLBACK_MERCHANT_DIRECTORY } from "../src/merchantDirectory.ts";
 
 function card(overrides: Partial<RecommendationCard> = {}, rewardModel: Partial<RewardModel> = {}): RecommendationCard {
   return {
@@ -25,7 +28,7 @@ function card(overrides: Partial<RecommendationCard> = {}, rewardModel: Partial<
 }
 
 const categoryCases = [
-  ["Swiggy order", "dining"],
+  ["Swiggy food order", "dining"],
   ["Swiggy Instamart", "grocery"],
   ["Blinkit groceries", "grocery"],
   ["Flight tickets", "travel"],
@@ -89,6 +92,42 @@ test("multi-service apps ask for the purchase type instead of inventing it", () 
     analysePaymentIntent("Amazon").categoryCandidates.map((item) => item.value),
     ["shopping", "grocery", "travel", "utilities", "wallet"],
   );
+});
+
+test("normalization understands common typos and Hinglish payment language", () => {
+  assert.equal(normalizePaymentText("Lkame saloon pe ₹3,000"), "lakme salon pe 3 000");
+  assert.equal(inferCategory("bijli ka bill"), "utilities");
+  assert.equal(inferCategory("ration aur sabzi"), "grocery");
+  assert.equal(inferCategory("phone lena hai"), "shopping");
+  assert.equal(inferCategory("ghar ka kiraya"), "rent");
+});
+
+test("merchant aliases and close spellings resolve to a canonical merchant", () => {
+  assert.equal(resolveMerchantEntity("Chroma se TV", FALLBACK_MERCHANT_DIRECTORY)?.displayName, "Croma");
+  const typo = resolveMerchantEntity("Lkame saloon", FALLBACK_MERCHANT_DIRECTORY);
+  assert.equal(typo?.displayName, "Lakme Salon");
+  assert.ok((typo?.score ?? 0) >= 0.72);
+  assert.equal(resolveMerchantEntity("Sharma and Sons", FALLBACK_MERCHANT_DIRECTORY), null);
+});
+
+test("specific words narrow multi-service apps while vague inputs remain honest", () => {
+  const utility = analysePaymentIntent("Google Pay se bijli bhar raha hu", "auto", "auto", FALLBACK_MERCHANT_DIRECTORY);
+  assert.deepEqual(utility.categoryCandidates.map((item) => item.value), ["utilities"]);
+  assert.deepEqual(utility.channelCandidates.map((item) => item.value), ["app"]);
+  assert.equal(utility.merchantResolution?.displayName, "Google Pay");
+
+  const amazonFlight = analysePaymentIntent("Amazon pe flight", "auto", "auto", FALLBACK_MERCHANT_DIRECTORY);
+  assert.deepEqual(amazonFlight.categoryCandidates.map((item) => item.value), ["travel"]);
+
+  const movie = analysePaymentIntent("movie tickets", "auto", "auto", FALLBACK_MERCHANT_DIRECTORY);
+  assert.deepEqual(movie.categoryCandidates.map((item) => item.value), ["other"]);
+
+  const unknown = analysePaymentIntent("Sharma and Sons", "auto", "auto", FALLBACK_MERCHANT_DIRECTORY);
+  assert.equal(unknown.overallConfidence, "unknown");
+  assert.deepEqual(unknown.categoryCandidates.map((item) => item.value), [
+    "dining", "grocery", "shopping", "travel", "utilities", "fuel",
+    "rent", "education", "insurance", "government", "wallet", "other",
+  ]);
 });
 
 test("generic merchant language exposes current offer-linked merchants without guessing", () => {
