@@ -136,16 +136,37 @@ export type PaymentIntentCandidate<T extends string> = {
 
 export type PaymentIntentAnalysis = {
   rawText: string;
+  normalizedText: string;
+  merchantResolution: MerchantResolution | null;
   categoryCandidates: PaymentIntentCandidate<Exclude<PurchaseCategory, "auto">>[];
   channelCandidates: PaymentIntentCandidate<Exclude<PaymentChannel, "auto">>[];
   categoryQuestion: string;
   channelQuestion: string;
   categoryConfidence: "high" | "needs_confirmation";
   channelConfidence: "high" | "needs_confirmation";
+  overallConfidence: "high" | "needs_confirmation" | "unknown";
 };
 
 export type MerchantIntentCandidate = PaymentIntentCandidate<string> & {
   offerId?: string;
+};
+
+export type MerchantEntity = {
+  id: string;
+  displayName: string;
+  aliases: string[];
+  categoryCandidates: Array<Exclude<PurchaseCategory, "auto">>;
+  channelCandidates: Array<Exclude<PaymentChannel, "auto">>;
+  confidence: RuleConfidence;
+  sourceUrl?: string;
+};
+
+export type MerchantResolution = {
+  entityId: string;
+  displayName: string;
+  matchedAlias: string;
+  score: number;
+  method: "exact" | "fuzzy";
 };
 
 export type RecommendationInput = {
@@ -242,22 +263,56 @@ export type RecommendationResult<T extends RecommendationCard> = {
   assumptions: string[];
 };
 
+const PAYMENT_TOKEN_REPLACEMENTS: Record<string, string> = {
+  chroma: "croma",
+  swigy: "swiggy",
+  swiggi: "swiggy",
+  instamrt: "instamart",
+  amzon: "amazon",
+  amazn: "amazon",
+  lkame: "lakme",
+  saloon: "salon",
+  elecricity: "electricity",
+  electicity: "electricity",
+  bijlee: "bijli",
+  kirana: "grocery",
+  rashan: "ration",
+  gpay: "google pay",
+};
+
+export function normalizePaymentText(value: string) {
+  const normalized = value
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/₹|rs\.?|inr/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  return normalized.split(/\s+/).filter(Boolean).flatMap((token) => (
+    PAYMENT_TOKEN_REPLACEMENTS[token]?.split(" ") ?? [token]
+  )).join(" ");
+}
+
 const CATEGORY_PATTERNS: Array<[Exclude<PurchaseCategory, "auto">, RegExp]> = [
-  ["rent", /\brent\b|housing society|maintenance/],
-  ["education", /school|college|tuition|education|course|university/],
-  ["insurance", /insurance|premium|lic\b/],
-  ["government", /government|govt|tax|challan|municipal/],
-  ["fuel", /fuel|petrol|diesel|hpcl|bpcl|indianoil|iocl/],
-  ["utilities", /utility|electricity|water bill|gas bill|broadband|recharge|dth|airtel/],
-  ["travel", /flight|airline|hotel|makemytrip|cleartrip|ixigo|travel|irctc|railway|uber|ola/],
-  ["dining", /swiggy|zomato|restaurant|dinner|lunch|cafe|food|dineout/],
-  ["grocery", /grocery|blinkit|zepto|bigbasket|dmart|instamart/],
-  ["wallet", /wallet load|add money|paytm wallet|amazon pay balance/],
-  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|croma|chroma|vijay sales|reliance digital|cosmetic|makeup/],
+  ["rent", /\brent\b|house rent|housing society|maintenance|kiraya|makaan/],
+  ["education", /school|college|tuition|education|course|university|coaching|fees|padhai/],
+  ["insurance", /insurance|premium|\blic\b|bima|beema/],
+  ["government", /government|\bgovt\b|\btax\b|challan|municipal|sarkari/],
+  ["fuel", /fuel|petrol|diesel|hpcl|bpcl|indianoil|iocl|petrol pump/],
+  ["utilities", /utility|electricity|bijli|water bill|paani|gas bill|broadband|recharge|dth|airtel/],
+  ["travel", /flight|airline|hotel|makemytrip|cleartrip|ixigo|travel|irctc|railway|train|uber|ola|cab|taxi/],
+  ["dining", /swiggy|zomato|restaurant|dinner|lunch|cafe|food|dineout|khana|meal|dhaba/],
+  ["grocery", /grocery|groceries|ration|sabzi|blinkit|zepto|bigbasket|dmart|instamart|supermarket/],
+  ["wallet", /wallet load|add money|wallet balance|paytm wallet|amazon pay balance/],
+  ["shopping", /amazon|flipkart|myntra|shopping|store|electronics|apparel|fashion|croma|vijay sales|reliance digital|cosmetic|makeup|mobile|phone|laptop|television|\btv\b|kapde|clothes|jewellery|jewelry/],
+];
+
+const ALL_CATEGORY_VALUES: Array<Exclude<PurchaseCategory, "auto">> = [
+  "dining", "grocery", "shopping", "travel", "utilities", "fuel",
+  "rent", "education", "insurance", "government", "wallet", "other",
 ];
 
 export function inferCategory(merchant: string): Exclude<PurchaseCategory, "auto"> {
-  const text = merchant.trim().toLowerCase();
+  const text = normalizePaymentText(merchant);
   if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) return "grocery";
   if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) return "dining";
   if (/salon|haircut|hair cut|spa|beauty parlou?r/.test(text)) return "other";
@@ -265,7 +320,7 @@ export function inferCategory(merchant: string): Exclude<PurchaseCategory, "auto
 }
 
 export function inferChannel(merchant: string): PaymentChannel {
-  const text = merchant.trim().toLowerCase();
+  const text = normalizePaymentText(merchant);
   if (/\bupi\b|bhim|qr code|rupay upi/.test(text)) return "upi";
   if (/google pay|gpay|airtel thanks|tata neu app|smartbuy|travel edge|partner app/.test(text)) return "app";
   if (/offline|in.store|at store|pos\b|swipe|tap/.test(text)) return "offline";
@@ -309,35 +364,141 @@ function channelCandidate(value: Exclude<PaymentChannel, "auto">) {
   return { value, label: labels[0], description: labels[1] };
 }
 
+function editDistance(left: string, right: string) {
+  const rows = left.length + 1;
+  const columns = right.length + 1;
+  const matrix = Array.from({ length: rows }, (_, row) => (
+    Array.from({ length: columns }, (_, column) => row === 0 ? column : column === 0 ? row : 0)
+  ));
+  for (let row = 1; row < rows; row += 1) {
+    for (let column = 1; column < columns; column += 1) {
+      const substitution = matrix[row - 1][column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1);
+      matrix[row][column] = Math.min(matrix[row - 1][column] + 1, matrix[row][column - 1] + 1, substitution);
+      if (
+        row > 1 && column > 1
+        && left[row - 1] === right[column - 2]
+        && left[row - 2] === right[column - 1]
+      ) matrix[row][column] = Math.min(matrix[row][column], matrix[row - 2][column - 2] + 1);
+    }
+  }
+  return matrix[left.length][right.length];
+}
+
+function similarity(left: string, right: string) {
+  const longest = Math.max(left.length, right.length);
+  return longest ? 1 - (editDistance(left, right) / longest) : 1;
+}
+
+function aliasScore(text: string, alias: string) {
+  if (` ${text} `.includes(` ${alias} `)) return 1;
+  const textTokens = text.split(" ").filter(Boolean);
+  const aliasTokens = alias.split(" ").filter(Boolean);
+  if (!textTokens.length || !aliasTokens.length || alias.length < 4) return 0;
+  if (aliasTokens.length === 1) {
+    return Math.max(...textTokens.filter((token) => token.length >= 4).map((token) => similarity(token, alias)), 0);
+  }
+  const windows = textTokens.flatMap((_, index) => (
+    [aliasTokens.length - 1, aliasTokens.length, aliasTokens.length + 1]
+      .filter((size) => size > 0)
+      .map((size) => textTokens.slice(index, index + size).join(" "))
+      .filter(Boolean)
+  ));
+  return Math.max(...windows.map((window) => similarity(window, alias)), 0);
+}
+
+export function resolveMerchantEntity(rawText: string, directory: MerchantEntity[]): MerchantResolution | null {
+  const text = normalizePaymentText(rawText);
+  if (!text || !directory.length) return null;
+  const matches = directory.flatMap((entity) => entity.aliases.map((candidateAlias) => {
+    const alias = normalizePaymentText(candidateAlias);
+    const score = aliasScore(text, alias);
+    return { entity, alias, score, method: score === 1 ? "exact" as const : "fuzzy" as const };
+  })).filter((candidate) => candidate.score >= 0.72)
+    .sort((left, right) => right.score - left.score || right.alias.length - left.alias.length);
+  if (!matches.length) return null;
+  const winner = matches[0];
+  const competingEntity = matches.find((candidate) => candidate.entity.id !== winner.entity.id);
+  if (winner.method === "fuzzy" && competingEntity && winner.score - competingEntity.score < 0.08) return null;
+  return {
+    entityId: winner.entity.id,
+    displayName: winner.entity.displayName,
+    matchedAlias: winner.alias,
+    score: Math.round(winner.score * 100) / 100,
+    method: winner.method,
+  };
+}
+
+function entityForResolution(resolution: MerchantResolution | null, directory: MerchantEntity[]) {
+  return resolution ? directory.find((entity) => entity.id === resolution.entityId) ?? null : null;
+}
+
+function explicitCategoryMatches(text: string) {
+  if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) return ["grocery"] as Array<Exclude<PurchaseCategory, "auto">>;
+  if (/swiggy/.test(text) && /dineout|restaurant|food|meal|khana/.test(text)) return ["dining"] as Array<Exclude<PurchaseCategory, "auto">>;
+  if (/movie|cinema|pvr|inox|bookmyshow/.test(text)) return ["other"] as Array<Exclude<PurchaseCategory, "auto">>;
+  return [...new Set(CATEGORY_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([value]) => value))];
+}
+
+function textWithoutResolvedMerchant(text: string, entity: MerchantEntity | null) {
+  if (!entity) return text;
+  return entity.aliases.reduce((current, aliasValue) => {
+    const alias = normalizePaymentText(aliasValue);
+    return ` ${current} `.replace(` ${alias} `, " ").trim();
+  }, text);
+}
+
 export function analysePaymentIntent(
   rawText: string,
   category: PurchaseCategory = "auto",
   channel: PaymentChannel = "auto",
+  directory: MerchantEntity[] = [],
 ): PaymentIntentAnalysis {
-  const text = rawText.trim().toLowerCase();
+  const text = normalizePaymentText(rawText);
+  const merchantResolution = resolveMerchantEntity(text, directory);
+  const matchedEntity = entityForResolution(merchantResolution, directory);
   let categoryValues: Exclude<PurchaseCategory, "auto">[];
   let categoryQuestion = "What is this payment for?";
+  let categoryConfidence: PaymentIntentAnalysis["categoryConfidence"] = "high";
+  const explicitCategories = explicitCategoryMatches(text);
+  const specificCategories = matchedEntity ? explicitCategoryMatches(textWithoutResolvedMerchant(text, matchedEntity)) : [];
 
   if (category !== "auto") categoryValues = [category];
+  else if (specificCategories.length === 1) categoryValues = specificCategories;
   else if (/swiggy/.test(text) && /instamart|grocery|groceries/.test(text)) categoryValues = ["grocery"];
-  else if (/swiggy/.test(text) && /dineout|restaurant|food|meal/.test(text)) categoryValues = ["dining"];
-  else if (/swiggy/.test(text)) {
+  else if (/swiggy/.test(text) && /dineout|restaurant|food|meal|khana/.test(text)) categoryValues = ["dining"];
+  else if (matchedEntity?.id === "swiggy" || /swiggy/.test(text)) {
     categoryValues = ["dining", "grocery"];
     categoryQuestion = "What are you ordering on Swiggy?";
-  } else if (/amazon(?!\s+pay\s+(?:wallet|balance))/.test(text)
+    categoryConfidence = "needs_confirmation";
+  } else if ((matchedEntity?.id === "amazon" || /amazon(?!\s+pay\s+(?:wallet|balance))/.test(text))
     && !/fresh|grocery|groceries|flight|hotel|travel|bill|recharge|electricity|electronics|phone|mobile|fashion|shopping|product|wallet load|add money/.test(text)) {
     categoryValues = ["shopping", "grocery", "travel", "utilities", "wallet"];
     categoryQuestion = "What are you paying for on Amazon?";
-  } else if (/google pay|gpay|paytm|phonepe|amazon pay/.test(text) && inferCategory(text) === "other") {
+    categoryConfidence = "needs_confirmation";
+  } else if (/google pay|paytm|phonepe|amazon pay/.test(text) && explicitCategories.length === 0) {
     categoryValues = ["utilities", "shopping", "wallet", "other"];
     categoryQuestion = "What is the payment inside the app for?";
-  } else categoryValues = [inferCategory(text)];
+    categoryConfidence = "needs_confirmation";
+  } else if (!matchedEntity && explicitCategories.length === 1) {
+    categoryValues = explicitCategories;
+  } else if (matchedEntity?.categoryCandidates.length) {
+    categoryValues = matchedEntity.categoryCandidates;
+    categoryConfidence = categoryValues.length === 1 ? "high" : "needs_confirmation";
+    if (categoryValues.length > 1) categoryQuestion = `What are you paying for at ${matchedEntity.displayName}?`;
+  } else if (/salon|haircut|hair cut|spa|beauty parlou?r|pharmacy|chemist|medicine|medical|hospital|doctor|clinic|gym|membership|home service|movie|cinema|wedding|venue|event/.test(text)) {
+    categoryValues = ["other"];
+  } else {
+    categoryValues = ALL_CATEGORY_VALUES;
+    categoryQuestion = `What is “${rawText.trim()}” for?`;
+    categoryConfidence = "needs_confirmation";
+  }
 
   let channelValues: Exclude<PaymentChannel, "auto">[];
   let channelQuestion = "How will you make this payment?";
+  let channelConfidence: PaymentIntentAnalysis["channelConfidence"] = "high";
   const explicitChannel = channel === "auto" ? inferChannel(text) : channel;
   if (explicitChannel !== "auto") channelValues = [explicitChannel];
-  else if (/croma|chroma|vijay sales|reliance digital|salon|spa|store|mall/.test(text)) {
+  else if (/croma|vijay sales|reliance digital|salon|spa|store|mall/.test(text)) {
     channelValues = ["offline", "online", "app", "upi"];
     channelQuestion = /salon|spa/.test(text) ? "How will you pay for this salon visit?" : "Are you buying online or at the store?";
   } else if (/swiggy|zomato|blinkit|zepto|instamart|amazon|flipkart|myntra|bigbasket/.test(text)) {
@@ -347,18 +508,29 @@ export function analysePaymentIntent(
     channelValues = ["app", "online", "upi"];
   } else if (/fuel|petrol|diesel|restaurant|cafe/.test(text)) {
     channelValues = ["offline", "upi"];
+  } else if (matchedEntity?.channelCandidates.length) {
+    channelValues = matchedEntity.channelCandidates;
   } else channelValues = ["online", "offline", "app", "upi"];
 
   const categoryCandidates = uniqueCandidates(categoryValues, categoryCandidate);
   const channelCandidates = uniqueCandidates(channelValues, channelCandidate);
+  if (channelCandidates.length > 1) channelConfidence = "needs_confirmation";
+  const overallConfidence: PaymentIntentAnalysis["overallConfidence"] = (
+    !merchantResolution && categoryValues.length === ALL_CATEGORY_VALUES.length
+      ? "unknown"
+      : categoryConfidence === "high" && channelConfidence === "high" ? "high" : "needs_confirmation"
+  );
   return {
     rawText: rawText.trim(),
+    normalizedText: text,
+    merchantResolution,
     categoryCandidates,
     channelCandidates,
     categoryQuestion,
     channelQuestion,
-    categoryConfidence: categoryCandidates.length === 1 ? "high" : "needs_confirmation",
-    channelConfidence: channelCandidates.length === 1 ? "high" : "needs_confirmation",
+    categoryConfidence,
+    channelConfidence,
+    overallConfidence,
   };
 }
 
@@ -380,7 +552,7 @@ const GENERIC_INPUT_FILLERS = new Set([
 ]);
 
 export function isGenericMerchantInput(rawText: string) {
-  const tokens = rawText.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const tokens = normalizePaymentText(rawText).match(/[a-z0-9]+/g) ?? [];
   if (!tokens.some((token) => GENERIC_MERCHANT_TERMS.has(token))) return false;
   return tokens.every((token) => GENERIC_MERCHANT_TERMS.has(token) || GENERIC_INPUT_FILLERS.has(token) || /^\d+$/.test(token));
 }
@@ -390,7 +562,7 @@ function displayMerchantName(value: string) {
 }
 
 function genericAlternativeLabel(rawText: string) {
-  const text = rawText.toLowerCase();
+  const text = normalizePaymentText(rawText);
   if (/salon|spa|haircut|beauty parlou?r/.test(text)) return "Another salon";
   if (/grocery|groceries|essentials|supermarket/.test(text)) return "Another grocery merchant";
   if (/restaurant|cafe|food|dinner|lunch/.test(text)) return "Another restaurant or food merchant";
@@ -406,7 +578,7 @@ export function merchantClarificationCandidates(
 ): MerchantIntentCandidate[] {
   if (!isGenericMerchantInput(rawText)) return [];
   const currentDate = asDate(asOf);
-  const normalized = rawText.toLowerCase();
+  const normalized = normalizePaymentText(rawText);
   const categorySet = new Set(categories);
   const candidates = new Map<string, MerchantIntentCandidate>();
 

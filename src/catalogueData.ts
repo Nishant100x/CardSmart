@@ -1,4 +1,4 @@
-import type { CardOffer, OfferBenefit, RewardEarning, RewardModel } from "./recommendationEngine";
+import type { CardOffer, MerchantEntity, OfferBenefit, RewardEarning, RewardModel } from "./recommendationEngine";
 
 export type CardData = {
   id: string;
@@ -28,12 +28,18 @@ export type CatalogSnapshot = {
   cards: CardData[];
   discoveryMeta: Record<string, DiscoveryMeta>;
   offers: CardOffer[];
+  merchants: MerchantEntity[];
 };
 
 type JsonObject = Record<string, unknown>;
 
 const NETWORKS = new Set<CardData["network"]>(["VISA", "Mastercard", "RuPay", "AMEX", "Diners Club"]);
 const CONFIDENCE = new Set<RewardModel["confidence"]>(["verified", "reviewed", "indicative"]);
+const PURCHASE_CATEGORIES = new Set<MerchantEntity["categoryCandidates"][number]>([
+  "dining", "grocery", "shopping", "travel", "utilities", "fuel", "rent",
+  "education", "insurance", "government", "wallet", "other",
+]);
+const PAYMENT_CHANNELS = new Set<MerchantEntity["channelCandidates"][number]>(["online", "offline", "app", "upi"]);
 
 function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
@@ -133,8 +139,33 @@ export function parsePublishedOfferRows(rows: unknown): CardOffer[] {
   });
 }
 
-export function parsePublishedCatalogRows(rows: unknown, offerRows: unknown = []): CatalogSnapshot {
-  if (!Array.isArray(rows)) return { cards: [], discoveryMeta: {}, offers: parsePublishedOfferRows(offerRows) };
+export function parsePublishedMerchantRows(rows: unknown): MerchantEntity[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((candidate): MerchantEntity[] => {
+    const row = objectValue(candidate);
+    const id = stringValue(row.merchant_key, stringValue(row.id));
+    const displayName = stringValue(row.display_name);
+    const aliases = stringList(row.aliases);
+    const categoryCandidates = stringList(row.category_candidates)
+      .filter((value): value is MerchantEntity["categoryCandidates"][number] => PURCHASE_CATEGORIES.has(value as MerchantEntity["categoryCandidates"][number]));
+    const channelCandidates = stringList(row.channel_candidates)
+      .filter((value): value is MerchantEntity["channelCandidates"][number] => PAYMENT_CHANNELS.has(value as MerchantEntity["channelCandidates"][number]));
+    if (!id || !displayName || !aliases.length || !categoryCandidates.length || !channelCandidates.length) return [];
+    return [{
+      id,
+      displayName,
+      aliases,
+      categoryCandidates,
+      channelCandidates,
+      confidence: CONFIDENCE.has(row.confidence as RewardModel["confidence"])
+        ? row.confidence as RewardModel["confidence"] : "reviewed",
+      sourceUrl: stringValue(row.source_url) || undefined,
+    }];
+  });
+}
+
+export function parsePublishedCatalogRows(rows: unknown, offerRows: unknown = [], merchantRows: unknown = []): CatalogSnapshot {
+  if (!Array.isArray(rows)) return { cards: [], discoveryMeta: {}, offers: parsePublishedOfferRows(offerRows), merchants: parsePublishedMerchantRows(merchantRows) };
 
   const cards: CardData[] = [];
   const discoveryMeta: Record<string, DiscoveryMeta> = {};
@@ -197,5 +228,5 @@ export function parsePublishedCatalogRows(rows: unknown, offerRows: unknown = []
     }
   });
 
-  return { cards, discoveryMeta, offers: parsePublishedOfferRows(offerRows) };
+  return { cards, discoveryMeta, offers: parsePublishedOfferRows(offerRows), merchants: parsePublishedMerchantRows(merchantRows) };
 }

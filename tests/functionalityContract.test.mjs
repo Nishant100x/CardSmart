@@ -10,6 +10,7 @@ const monitor = readFileSync(new URL("../supabase/functions/card-monitor/index.t
 const monitoringSql = readFileSync(new URL("../supabase/card-monitoring-setup.sql", import.meta.url), "utf8");
 const rewardsSql = readFileSync(new URL("../supabase/rewards-truth-layer-v10.10.sql", import.meta.url), "utf8");
 const redemptionSql = readFileSync(new URL("../supabase/redemption-intelligence-v10.11.sql", import.meta.url), "utf8");
+const intentSql = readFileSync(new URL("../supabase/payment-intent-resolution-v10.12.sql", import.meta.url), "utf8");
 
 test("previous payment restores the full decision context", () => {
   assert.match(source, /setPurchaseCategory\(item\.category\)/);
@@ -118,4 +119,16 @@ test("natural payment input asks only when ambiguity changes the recommendation"
   assert.match(source, /Which \$\{genericLabel\} are you paying/);
   assert.match(css, /\.payment-clarification/);
   assert.match(css, /\.resolved-payment-context/);
+});
+
+test("V10.12 resolves arbitrary language without moving reward maths into language inference", () => {
+  assert.match(engine, /normalizePaymentText/);
+  assert.match(engine, /resolveMerchantEntity/);
+  assert.match(engine, /overallConfidence/);
+  assert.match(source, /FALLBACK_MERCHANT_DIRECTORY/);
+  assert.match(source, /Matched merchant:/);
+  assert.match(repository, /from\("merchant_directory"\)/);
+  assert.match(intentSql, /merchant_directory/);
+  assert.match(intentSql, /Published merchant directory is public/);
+  assert.doesNotMatch(engine, /fetch\(|openai|anthropic|gemini/i);
 });
